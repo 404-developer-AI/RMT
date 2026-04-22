@@ -19,5 +19,20 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      'react-refresh/only-export-components': [
+        'warn',
+        { allowConstantExport: true },
+      ],
+    },
+  },
+  {
+    // shadcn/ui primitives co-locate their CVA variant objects next to the
+    // component (e.g. `buttonVariants`, `badgeVariants`). That tripped the
+    // Fast Refresh rule which only recognises `export const X = …` patterns.
+    files: ['src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
   },
 ])

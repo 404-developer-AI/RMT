@@ -16,7 +16,6 @@ from structlog.types import EventDict, Processor
 
 from app.config import get_settings
 
-
 SENSITIVE_KEY_FRAGMENTS = (
     "password",
     "secret",
@@ -40,7 +39,7 @@ def _is_sensitive_key(key: str) -> bool:
 def _scrub(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {k: (REDACTED if _is_sensitive_key(k) else _scrub(v)) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         scrubbed = [_scrub(item) for item in value]
         return type(value)(scrubbed)
     return value
