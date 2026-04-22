@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query"
 import { Activity, Database, RefreshCw } from "lucide-react"
 
+import { ThemeToggle } from "@/components/theme-toggle"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -63,10 +64,13 @@ export default function App() {
               Registrar Migration Tool
             </p>
           </div>
-          <Button variant="outline" size="sm" onClick={refresh}>
-            <RefreshCw />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <Button variant="outline" size="sm" onClick={refresh}>
+              <RefreshCw />
+              Refresh
+            </Button>
+          </div>
         </div>
       </header>
 

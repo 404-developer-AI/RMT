@@ -5,6 +5,17 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RMT — Registrar Migration Tool</title>
+    <script>
+      // Apply the saved theme (default: dark) before React mounts to avoid
+      // a flash of light content. Kept in sync afterwards by useTheme().
+      (function () {
+        try {
+          var stored = localStorage.getItem("rmt.theme");
+          var theme = stored === "light" || stored === "dark" ? stored : "dark";
+          if (theme === "dark") document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
