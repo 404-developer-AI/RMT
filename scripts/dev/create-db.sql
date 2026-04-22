@@ -16,13 +16,11 @@
 \set ON_ERROR_STOP on
 
 -- Create the role if it does not already exist.
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rmt_dev') THEN
-        EXECUTE format('CREATE ROLE rmt_dev WITH LOGIN PASSWORD %L', :'password');
-    END IF;
-END
-$$;
+-- `\gexec` runs the SELECT's result as a SQL statement, which lets us use the
+-- psql `:'password'` variable substitution outside of a dollar-quoted block.
+SELECT 'CREATE ROLE rmt_dev WITH LOGIN PASSWORD ' || quote_literal(:'password') AS stmt
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rmt_dev')
+\gexec
 
 -- Create the database if it does not already exist.
 SELECT 'CREATE DATABASE rmt_dev OWNER rmt_dev ENCODING ''UTF8'''
