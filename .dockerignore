@@ -1,0 +1,39 @@
+# Version control
+.git/
+.gitattributes
+
+# Editors / IDE
+.vs/
+.vscode/
+.idea/
+
+# Internal / private docs (not pushed to GitHub; also not needed in images)
+CLAUDE.md
+ROADMAP.md
+CHANGELOG.md
+CHANGELOG-ARCHIVE.md
+ARCHITECTURE.md
+NOTFORCLAUD.MD
+
+# Local env (SECURITY)
+.env
+.env.*
+!.env.example
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+backend/tests/
+
+# Node
+**/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Ops-only scripts (not needed inside application images)
+scripts/
