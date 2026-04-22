@@ -59,7 +59,12 @@ export default function App() {
       <header className="border-b">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">RMT</h1>
+            <h1 className="flex items-baseline gap-2 text-xl font-semibold tracking-tight">
+              RMT
+              <span className="font-mono text-sm font-normal text-muted-foreground">
+                {version ? `v${version}` : ""}
+              </span>
+            </h1>
             <p className="text-sm text-muted-foreground">
               Registrar Migration Tool
             </p>
