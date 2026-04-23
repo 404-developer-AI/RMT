@@ -135,9 +135,7 @@ def _is_godaddy_internal_record(record: DnsRecord) -> bool:
             target == suffix or target.endswith("." + suffix)
             for suffix in _GODADDY_INTERNAL_HOSTNAME_SUFFIXES
         )
-    if record.type == "A" and data == _GODADDY_PARKED_SENTINEL:
-        return True
-    return False
+    return record.type == "A" and data == _GODADDY_PARKED_SENTINEL
 
 
 def godaddy_to_combell_record(record: DnsRecord, *, domain: str) -> DnsRecord:
