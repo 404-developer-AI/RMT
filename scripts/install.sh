@@ -295,6 +295,18 @@ SCHEME="http"
 [ "$SSL_ENABLED" = "true" ] && SCHEME="https"
 
 # -----------------------------------------------------------------------------
+# Determine public egress IP for the Combell whitelist instruction
+# -----------------------------------------------------------------------------
+# Combell denies every API request from a non-whitelisted source IP, so the
+# operator MUST register this host's egress IP in the Combell control panel
+# before the adapter can reach the API. We try two independent echo services
+# so a single outage does not block the install.
+EGRESS_IP=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null \
+           || curl -fsS --max-time 5 https://ifconfig.co 2>/dev/null \
+           || true)
+EGRESS_IP="${EGRESS_IP:-unknown — run \`curl https://api.ipify.org\` from this host}"
+
+# -----------------------------------------------------------------------------
 # Install report
 # -----------------------------------------------------------------------------
 info "Writing install report to $REPORT_PATH"
@@ -337,6 +349,24 @@ umask 077
     echo "  stop:                docker compose -f ${INSTALL_DIR}/docker-compose.yml down"
     echo
     echo "================================================================="
+    echo "  REQUIRED MANUAL STEP — Combell IP whitelist"
+    echo "================================================================="
+    echo
+    echo "  This VPS's public egress IP is:"
+    echo
+    echo "      ${EGRESS_IP}"
+    echo
+    echo "  Combell DENIES every API request from a non-whitelisted source"
+    echo "  IP. Before RMT can talk to Combell you MUST:"
+    echo
+    echo "    1. Sign in at https://my.combell.com"
+    echo "    2. Go to: Account → API configuration → IP whitelist"
+    echo "    3. Add the IP above and save."
+    echo
+    echo "  Without this step, every Combell 'Test connection' and every"
+    echo "  migration submission will fail with HTTP 401/403."
+    echo
+    echo "================================================================="
     echo "  SECURITY WARNING"
     echo "================================================================="
     echo
@@ -363,6 +393,11 @@ ok "RMT is installed and reachable at ${SCHEME}://${FQDN}"
 echo "${GREEN}${BOLD}============================================================${RESET}"
 echo
 printf "Install report: %s\n" "$REPORT_PATH"
+echo
+printf "%s${BOLD}⚠ REQUIRED: Combell IP whitelist${RESET}\n" "$YELLOW"
+printf "           This VPS's public egress IP is: ${BOLD}%s${RESET}\n" "$EGRESS_IP"
+printf "           Add it at Combell → Account → API configuration → IP whitelist\n"
+printf "           before any migration will succeed.\n"
 echo
 printf "%s${BOLD}⚠ WARNING${RESET} — the install report contains %sPLAINTEXT SECRETS%s\n" "$YELLOW" "$BOLD" "$RESET"
 printf "           (PostgreSQL password + application secret).\n"
