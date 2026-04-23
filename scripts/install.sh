@@ -226,13 +226,8 @@ APP_SECRET=${APP_SECRET}
 
 CORS_ALLOWED_ORIGINS=${CORS_ORIGINS}
 
-GODADDY_API_KEY=
-GODADDY_API_SECRET=
-GODADDY_API_BASE=https://api.godaddy.com
-
-COMBELL_API_KEY=
-COMBELL_API_SECRET=
-COMBELL_API_BASE=https://api.combell.com
+# Registrar API credentials (GoDaddy, Combell, …) are stored encrypted in
+# PostgreSQL and managed via the settings page in the UI — not in this file.
 EOF
 chown root:root "$INSTALL_DIR/.env"
 chmod 600 "$INSTALL_DIR/.env"
