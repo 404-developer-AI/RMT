@@ -230,9 +230,16 @@ class CombellAdapter(RegistrarAdapter):
         When ``name_servers`` is falsy Combell assigns its defaults atomically
         with the transfer — the V1 policy documented in ARCHITECTURE.md §7.
         """
+        # Combell's /v2/domains/transfers body (TransferDomain schema,
+        # verified against swagger-v2.json):
+        #   domain_name, auth_code, name_servers[], registrant
+        # Note: the auth_code field is named "auth_code" — NOT transfer_code.
+        # Combell rejects an unknown-name field silently and reports
+        # "authorization_code_empty", which is the error path the engine hit
+        # during the first live attempt.
         body = {
             "domain_name": name,
-            "transfer_code": auth_code,
+            "auth_code": auth_code,
             "registrant": registrant,
             "name_servers": list(name_servers) if name_servers else [],
         }
@@ -252,13 +259,29 @@ class CombellAdapter(RegistrarAdapter):
                 job_id=str(payload["id"]),
                 submitted_at=datetime.now(tz=UTC),
             )
-        _, data = await self._request_json(
-            "POST",
-            "/v2/domains/transfers",
-            body=body,
-            expected_status=(200, 201, 202),
+        # Combell returns 202 Accepted with an empty body for async
+        # operations; the provisioning-job id lives in the Location header
+        # (RFC 7231) pointing at /v2/provisioningjobs/{id}. We go through
+        # the raw client here instead of _request_json so we can inspect
+        # those headers — parsing the body would just produce ``None``.
+        client = self._get_client()
+        body_bytes = json.dumps(body, separators=(",", ":")).encode("utf-8")
+        path = "/v2/domains/transfers"
+        headers = self._sign("POST", path, body_bytes)
+        response = await client.request(
+            "POST", path, headers=headers, content=body_bytes,
         )
-        job_id = _extract_job_id(data)
+        if response.status_code not in (200, 201, 202):
+            raise RegistrarHTTPError(
+                f"Combell rejected the transfer request with HTTP "
+                f"{response.status_code}: {(response.text or '').strip()[:300]}",
+                status_code=response.status_code,
+                body=response.text,
+            )
+        job_id = _extract_job_id(
+            location=response.headers.get("Location"),
+            body_text=response.text,
+        )
         return ProvisioningJobRef(job_id=job_id, submitted_at=datetime.now(tz=UTC))
 
     async def get_provisioning_job(self, job_id: str) -> JobStatus:
@@ -383,18 +406,35 @@ def _record_to_combell_body(record: DnsRecord) -> dict[str, Any]:
     return body
 
 
-def _extract_job_id(payload: Any) -> str:
-    """Combell's mutating endpoints put the job id in different places."""
-    if isinstance(payload, dict):
-        for key in ("id", "provisioning_job_id", "job_id"):
-            if isinstance(payload.get(key), str | int):
-                return str(payload[key])
-        if isinstance(payload.get("provisioning_job"), dict):
-            nested = payload["provisioning_job"].get("id")
-            if isinstance(nested, str | int):
-                return str(nested)
+def _extract_job_id(*, location: str | None, body_text: str | None) -> str:
+    """Pull a provisioning-job id out of a Combell 202 response.
+
+    Primary source is the ``Location`` header, which for 202-Accepted
+    endpoints points at ``/v2/provisioningjobs/{id}`` — that's the
+    documented RFC 7231 pattern and it matches Combell's behaviour in
+    practice. The body fallback exists for robustness: some older
+    deployments return a small JSON document instead, and a mis-configured
+    reverse proxy might strip the header entirely.
+    """
+    if location:
+        candidate = location.strip().rstrip("/").rsplit("/", 1)[-1]
+        if candidate:
+            return candidate
+    if body_text:
+        try:
+            payload = json.loads(body_text)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            for key in ("id", "provisioning_job_id", "job_id"):
+                if isinstance(payload.get(key), str | int):
+                    return str(payload[key])
+            nested = payload.get("provisioning_job")
+            if isinstance(nested, dict) and isinstance(nested.get("id"), str | int):
+                return str(nested["id"])
     raise RegistrarHTTPError(
-        f"Combell response did not contain a provisioning-job id: {payload!r}"
+        "Combell response did not contain a provisioning-job id "
+        f"(Location header: {location!r}, body: {(body_text or '').strip()[:200]!r})"
     )
 
 

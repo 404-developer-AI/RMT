@@ -270,8 +270,14 @@ class RateLimitedClient:
             content=content,
         )
         if response.status_code not in expected_status:
+            body_snippet = (response.text or "").strip()[:300]
+            message = (
+                f"Unexpected status {response.status_code} for {method} {path}"
+            )
+            if body_snippet:
+                message = f"{message} — {body_snippet}"
             raise RegistrarHTTPError(
-                f"Unexpected status {response.status_code} for {method} {path}",
+                message,
                 status_code=response.status_code,
                 body=response.text,
             )
