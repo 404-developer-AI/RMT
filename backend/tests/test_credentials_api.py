@@ -134,13 +134,17 @@ async def test_delete_removes_row(client: AsyncClient, clean_credentials: None) 
     assert resp.status_code == 404
 
 
-async def test_test_connection_returns_friendly_error_when_adapter_missing(
+async def test_test_connection_returns_uniform_shape_on_failure(
     client: AsyncClient, clean_credentials: None
 ) -> None:
-    """V1 ships without concrete adapters — endpoint must not 500."""
+    """A registrar unreachable from the test environment returns 200 + ok=False.
+
+    The endpoint must never propagate a raw exception — the settings page
+    relies on the uniform ``{ok, error}`` shape to render any failure.
+    """
     body = await _create(client, provider="godaddy")
     resp = await client.post(f"/api/credentials/{body['id']}/test")
     assert resp.status_code == 200
     result = resp.json()
     assert result["ok"] is False
-    assert "No adapter is installed" in result["error"]
+    assert result["error"]  # a human-readable message, not None

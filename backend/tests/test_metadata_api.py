@@ -11,9 +11,10 @@ async def test_list_providers_includes_v1_pair(client: AsyncClient) -> None:
     body = resp.json()
     keys = {p["key"] for p in body}
     assert {"godaddy", "combell"}.issubset(keys)
-    # No concrete adapter installed yet in V1.
-    for entry in body:
-        assert entry["adapter_installed"] is False
+    # Both V1 adapters ship together — the UI can assume they are present.
+    by_key = {p["key"]: p for p in body}
+    assert by_key["godaddy"]["adapter_installed"] is True
+    assert by_key["combell"]["adapter_installed"] is True
 
 
 async def test_list_migration_types_returns_godaddy_to_combell(
