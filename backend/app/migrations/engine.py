@@ -32,7 +32,7 @@ from app.migrations.diff import ZoneDiff, compute_diff, serialize_diff
 from app.migrations.preflight import run_preflight, serialize_report
 from app.migrations.registry import get_migration_type
 from app.migrations.snapshot import build_snapshot_payload, capture_snapshot
-from app.migrations.translators import translate_registrant
+from app.migrations.translators import translate_records, translate_registrant
 from app.models import DomainSnapshot, MigrationPlan, MigrationState
 from app.registrars.base import DnsRecord, RegistrarAdapter
 
@@ -333,6 +333,13 @@ async def populate_and_verify(
         raise MigrationEngineError("No snapshot found — cannot populate.")
 
     source_records = _records_from_snapshot(snapshot.snapshot)
+    # Translate source records into the destination's expected shape
+    # (resolve GoDaddy's ``@`` apex shorthand in CNAME/ALIAS/MX content,
+    # etc.). Doing this BEFORE the diff keeps source and destination on
+    # the same footing so verify does not loop on a phantom mismatch.
+    source_records = translate_records(
+        plan.migration_type, source_records, domain=plan.domain
+    )
     destination_records_before: list[DnsRecord] = []
     try:
         destination_records_before = list(await destination.list_dns_records(plan.domain))
@@ -349,41 +356,69 @@ async def populate_and_verify(
     # Delete first so a to_update that coincides with a to_delete on the
     # same (type, name) cannot collide. NS / SOA are already filtered out
     # of diff.to_delete by compute_diff, so Combell's nameservers stay put.
-    for record in diff.to_delete:
-        logger.info(
-            "migration.populate.delete",
-            domain=plan.domain,
-            type=record.type,
-            record_name=record.name,
-            data=record.data,
+    try:
+        for record in diff.to_delete:
+            logger.info(
+                "migration.populate.delete",
+                domain=plan.domain,
+                type=record.type,
+                record_name=record.name,
+                data=record.data,
+            )
+            await _apply_with_context(
+                destination.delete_dns_record, plan.domain, record, action="delete",
+            )
+        for record in diff.to_create:
+            logger.info(
+                "migration.populate.create",
+                domain=plan.domain,
+                type=record.type,
+                record_name=record.name,
+                data=record.data,
+                ttl=record.ttl,
+                priority=record.priority,
+            )
+            await _apply_with_context(
+                destination.create_dns_record, plan.domain, record, action="create",
+            )
+        for record in diff.to_update:
+            logger.info(
+                "migration.populate.update",
+                domain=plan.domain,
+                type=record.type,
+                record_name=record.name,
+                data=record.data,
+            )
+            await _apply_with_context(
+                destination.update_dns_record, plan.domain, record, action="update",
+            )
+    except Exception as exc:
+        # A mid-batch failure leaves the destination in a partially-applied
+        # state that the operator must reconcile. Park the plan on FAILED
+        # so the background poller stops retrying — a manual ``Resume``
+        # click replays the whole zone-replace once the root cause is
+        # fixed (e.g. a translator tweak or an offending snapshot record).
+        plan.state = MigrationState.FAILED
+        plan.error_message = str(exc)
+        existing_diff = plan.diff or {}
+        plan.diff = {**existing_diff, "populate_attempt": serialize_diff(diff)}
+        await session.commit()
+        await audit.record(
+            session,
+            correlation_id=plan.correlation_id,
+            actor=actor,
+            action="migration.populate_failed",
+            target={"domain": plan.domain},
+            after={
+                "state": plan.state.value,
+                "error": plan.error_message[:500],
+                "diff_summary": diff.summary(),
+            },
+            result="failure",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            registrar=destination.provider,
         )
-        await _apply_with_context(
-            destination.delete_dns_record, plan.domain, record, action="delete",
-        )
-    for record in diff.to_create:
-        logger.info(
-            "migration.populate.create",
-            domain=plan.domain,
-            type=record.type,
-            record_name=record.name,
-            data=record.data,
-            ttl=record.ttl,
-            priority=record.priority,
-        )
-        await _apply_with_context(
-            destination.create_dns_record, plan.domain, record, action="create",
-        )
-    for record in diff.to_update:
-        logger.info(
-            "migration.populate.update",
-            domain=plan.domain,
-            type=record.type,
-            record_name=record.name,
-            data=record.data,
-        )
-        await _apply_with_context(
-            destination.update_dns_record, plan.domain, record, action="update",
-        )
+        raise
     duration_ms = int((time.perf_counter() - started) * 1000)
 
     # Verify — read the zone back and diff against the snapshot.

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from app.migrations.translators import (
     _normalize_phone,
+    godaddy_to_combell_record,
     godaddy_to_combell_registrant,
+    translate_records,
     translate_registrant,
 )
+from app.registrars.base import DnsRecord
 
 
 def test_godaddy_to_combell_registrant_happy_path() -> None:
@@ -100,3 +103,46 @@ def test_dispatch_routes_to_godaddy_to_combell() -> None:
     out = translate_registrant("godaddy_to_combell", raw)
     assert out["first_name"] == "Ada"
     assert out["country_code"] == "BE"
+
+
+# --- record translator ----------------------------------------------------
+
+
+def test_cname_at_is_resolved_to_domain() -> None:
+    """GoDaddy stores CNAME target of `@` meaning the apex; Combell refuses."""
+    rec = DnsRecord(type="CNAME", name="www", data="@", ttl=3600)
+    out = godaddy_to_combell_record(rec, domain="example.com")
+    assert out.data == "example.com"
+
+
+def test_mx_at_is_resolved_to_domain() -> None:
+    rec = DnsRecord(type="MX", name="@", data="@", ttl=3600, priority=10)
+    out = godaddy_to_combell_record(rec, domain="example.com")
+    assert out.data == "example.com"
+    assert out.priority == 10
+
+
+def test_cname_with_concrete_hostname_is_untouched() -> None:
+    rec = DnsRecord(type="CNAME", name="blog", data="hosting.example.net", ttl=3600)
+    assert godaddy_to_combell_record(rec, domain="example.com") is rec
+
+
+def test_a_record_with_at_is_left_alone() -> None:
+    # @ in the NAME side is the apex; @ in the DATA side of an A record
+    # would be nonsensical and should not be touched (it would 400, which
+    # is exactly the signal the operator needs).
+    rec = DnsRecord(type="A", name="@", data="1.2.3.4", ttl=3600)
+    out = godaddy_to_combell_record(rec, domain="example.com")
+    assert out is rec
+
+
+def test_translate_records_routes_to_godaddy_to_combell() -> None:
+    src = [DnsRecord(type="CNAME", name="www", data="@", ttl=3600)]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert out[0].data == "example.com"
+
+
+def test_translate_records_passes_through_unknown_pair() -> None:
+    src = [DnsRecord(type="CNAME", name="www", data="@", ttl=3600)]
+    out = translate_records("totally_unknown", src, domain="example.com")
+    assert out is src

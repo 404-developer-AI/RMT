@@ -15,7 +15,10 @@ so new pairs slot in without a branch in the engine.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any
+
+from app.registrars.base import DnsRecord
 
 # Cosmetic separators operators tend to sprinkle into phone numbers.
 # We strip these but leave ``+`` and ``.`` alone because those are
@@ -96,11 +99,49 @@ def godaddy_to_combell_registrant(raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# Record types whose ``data`` field is a hostname / FQDN. GoDaddy lets
+# operators use ``@`` there as shorthand for the apex; Combell rejects
+# that form with ``dns_invalid_content`` and expects the literal domain.
+_HOSTNAME_CONTENT_TYPES = frozenset({"CNAME", "ALIAS", "MX"})
+
+
+def godaddy_to_combell_record(record: DnsRecord, *, domain: str) -> DnsRecord:
+    """Translate one GoDaddy-shaped DNS record into Combell's expectations.
+
+    The only substitution we need for V1 is resolving the apex shorthand:
+    GoDaddy accepts ``@`` in the ``data`` field of CNAME / ALIAS / MX
+    records to mean "the domain itself", Combell does not. The name-side
+    (``record_name``) ``@`` is fine on both sides because both registrars
+    treat it as "the apex".
+
+    Leaves the record unchanged when the ``data`` is empty or when the
+    record type does not use a hostname in its content (A, AAAA, TXT, …).
+    """
+    if record.type not in _HOSTNAME_CONTENT_TYPES:
+        return record
+    data = (record.data or "").strip()
+    if data == "@":
+        return replace(record, data=domain)
+    # GoDaddy sometimes stores a CNAME target without the trailing dot
+    # (e.g. "parking.godaddy.com"); Combell accepts both, so leave it.
+    return record
+
+
+def godaddy_to_combell_records(
+    records: list[DnsRecord], *, domain: str
+) -> list[DnsRecord]:
+    return [godaddy_to_combell_record(r, domain=domain) for r in records]
+
+
 # --- dispatch --------------------------------------------------------------
 
 
 _REGISTRANT_TRANSLATORS: dict[str, Any] = {
     "godaddy_to_combell": godaddy_to_combell_registrant,
+}
+
+_RECORD_TRANSLATORS: dict[str, Any] = {
+    "godaddy_to_combell": godaddy_to_combell_records,
 }
 
 
@@ -110,3 +151,13 @@ def translate_registrant(migration_type: str, raw: dict[str, Any]) -> dict[str, 
     if translator is None:
         return raw
     return translator(raw)
+
+
+def translate_records(
+    migration_type: str, records: list[DnsRecord], *, domain: str
+) -> list[DnsRecord]:
+    """Run the pair-specific record translator; pass through if none exists."""
+    translator = _RECORD_TRANSLATORS.get(migration_type)
+    if translator is None:
+        return records
+    return translator(records, domain=domain)
