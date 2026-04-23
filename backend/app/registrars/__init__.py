@@ -16,6 +16,11 @@ from app.registrars.base import (
     RegistrarAdapter,
     RegistrarRole,
 )
+from app.registrars.registry import (
+    get_adapter_class,
+    register_adapter,
+    registered_providers,
+)
 
 __all__ = [
     "AdapterCapabilities",
@@ -27,4 +32,7 @@ __all__ = [
     "ProvisioningJobRef",
     "RegistrarAdapter",
     "RegistrarRole",
+    "get_adapter_class",
+    "register_adapter",
+    "registered_providers",
 ]

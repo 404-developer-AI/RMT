@@ -55,6 +55,21 @@ def list_migration_types() -> list[MigrationType]:
     return list(MIGRATION_TYPES.values())
 
 
+def known_providers() -> list[str]:
+    """Every distinct provider referenced by a registered migration type.
+
+    Used by the credentials API to validate incoming provider names and by
+    the UI to offer a dropdown. Source providers come before destination
+    providers in a single pass, with duplicates removed while preserving
+    first-seen order.
+    """
+    seen: dict[str, None] = {}
+    for entry in MIGRATION_TYPES.values():
+        seen.setdefault(entry.source_provider, None)
+        seen.setdefault(entry.destination_provider, None)
+    return list(seen)
+
+
 # --- V1 entries -------------------------------------------------------------
 
 register_migration_type(
