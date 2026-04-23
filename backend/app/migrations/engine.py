@@ -278,6 +278,16 @@ async def poll_transfer(
 
     started = time.perf_counter()
     status = await destination.get_provisioning_job(plan.provisioning_job_id)
+    # Combell keeps /v2/provisioningjobs sitting on "ongoing" until the NS
+    # cutover propagates, even though the domain lands in /v2/domains as
+    # soon as the transfer is registry-side complete (servicelimburgbv.be
+    # incident). Treat inventory presence as the authoritative done-signal
+    # and fall back to the job status only for failed/cancelled. We skip
+    # the extra call when the job has already resolved either way, keeping
+    # the poll cheap on the happy paths.
+    destination_owned = False
+    if status.status == "ongoing":
+        destination_owned = await _destination_owns_domain(destination, plan.domain)
     duration_ms = int((time.perf_counter() - started) * 1000)
 
     plan.last_polled_at = status.polled_at
@@ -289,13 +299,17 @@ async def poll_transfer(
         actor=actor,
         action="migration.poll",
         target={"domain": plan.domain, "provisioning_job_id": status.job_id},
-        after={"status": status.status},
+        after={
+            "status": status.status,
+            "raw": status.detail,
+            "destination_owned": destination_owned,
+        },
         result="success",
         duration_ms=duration_ms,
         registrar=destination.provider,
     )
 
-    if status.status == "finished":
+    if status.status == "finished" or destination_owned:
         plan.state = MigrationState.POPULATING_DNS
         await session.commit()
         await audit.record(
@@ -304,7 +318,12 @@ async def poll_transfer(
             actor=actor,
             action="migration.state_changed",
             target={"domain": plan.domain},
-            after={"state": plan.state.value},
+            after={
+                "state": plan.state.value,
+                "trigger": "provisioning_job_finished"
+                if status.status == "finished"
+                else "destination_owns_domain",
+            },
             result="success",
         )
     elif status.status in ("failed", "cancelled"):

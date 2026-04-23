@@ -94,7 +94,10 @@ class StubDestination(RegistrarAdapter):
     async def request_transfer_in(
         self, *, name, auth_code, registrant, name_servers=None
     ) -> ProvisioningJobRef:
-        self.owned.add(name)
+        # Deliberately not added to ``owned`` — real Combell only lists the
+        # domain after the transfer is registry-side complete, not at
+        # submission time. Tests that need post-transfer state add it
+        # explicitly.
         return ProvisioningJobRef(job_id="stub-job-1", submitted_at=datetime.now(tz=UTC))
 
     async def get_provisioning_job(self, job_id: str) -> JobStatus:
@@ -102,6 +105,7 @@ class StubDestination(RegistrarAdapter):
             job_id=job_id,
             status=self._job_status,  # type: ignore[arg-type]
             polled_at=datetime.now(tz=UTC),
+            detail={"id": job_id, "status": self._job_status},
         )
 
     async def create_dns_record(self, name, record) -> None:
@@ -176,6 +180,63 @@ async def test_full_lifecycle_happy_path(clean_migration_state: None) -> None:
         plan = await populate_and_verify(session, plan, destination=destination)
         assert plan.state == MigrationState.COMPLETED
         assert destination.zone, "populate step should have created the A record"
+
+
+async def test_poll_advances_when_destination_owns_despite_ongoing_job(
+    clean_migration_state: None,
+) -> None:
+    """Reproduces the servicelimburgbv.be incident.
+
+    Combell leaves /v2/provisioningjobs on ``ongoing`` until the NS cutover
+    propagates, but /v2/domains already lists the domain as soon as the
+    registry-side transfer completes. The poller must treat inventory
+    presence as the authoritative done-signal and advance regardless.
+    """
+    source = StubSource()
+    destination = StubDestination()
+
+    async with AsyncSessionLocal() as session:
+        plan = await create_plan(
+            session, domain="example.com", migration_type="godaddy_to_combell"
+        )
+        plan, *_ = await preview_plan(
+            session, plan, source=source, destination=destination
+        )
+        plan = await confirm_and_submit(
+            session,
+            plan,
+            source=source,
+            destination=destination,
+            auth_code="test-auth-code",
+            typed_domain="example.com",
+        )
+        assert plan.state == MigrationState.AWAITING_TRANSFER
+        assert destination._job_status == "ongoing"
+
+        # Job stuck on ongoing AND domain not yet in Combell's inventory.
+        plan = await poll_transfer(session, plan, destination=destination)
+        assert plan.state == MigrationState.AWAITING_TRANSFER
+
+        # Combell now lists the domain, job stays "ongoing" (real bug).
+        destination.owned.add("example.com")
+        plan = await poll_transfer(session, plan, destination=destination)
+        assert plan.state == MigrationState.POPULATING_DNS
+
+        # Audit row captures the raw Combell body and the ownership flag
+        # so this class of stall is diagnosable from the UI next time.
+        from sqlalchemy import select
+
+        events = (
+            await session.execute(
+                select(AuditEvent)
+                .where(AuditEvent.action == "migration.poll")
+                .order_by(AuditEvent.ts.desc())
+            )
+        ).scalars().all()
+        assert events, "expected a migration.poll audit row"
+        latest = events[0].after or {}
+        assert latest.get("destination_owned") is True
+        assert latest.get("raw", {}).get("status") == "ongoing"
 
 
 async def test_confirm_rejects_wrong_typed_domain(clean_migration_state: None) -> None:
