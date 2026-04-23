@@ -144,8 +144,16 @@ async def preview_plan(
         # treat as an empty zone for preview purposes.
         destination_records = []
 
+    # Translate source records into the destination's expected shape
+    # BEFORE diffing so the preview mirrors what populate will push. This
+    # also applies pair-specific filters (e.g. dropping GoDaddy's
+    # ``_domainconnect`` CNAME) so the operator does not see a record in
+    # the preview that silently vanishes at populate time.
+    translated_for_diff = translate_records(
+        plan.migration_type, records, domain=plan.domain
+    )
     diff = compute_diff(
-        source_records=records,
+        source_records=translated_for_diff,
         destination_records=destination_records,
         supported_types=destination.capabilities.supported_record_types,
     )

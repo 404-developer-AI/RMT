@@ -105,6 +105,41 @@ def godaddy_to_combell_registrant(raw: dict[str, Any]) -> dict[str, Any]:
 _HOSTNAME_CONTENT_TYPES = frozenset({"CNAME", "ALIAS", "MX"})
 
 
+# GoDaddy auto-provisions a few records that only make sense inside its own
+# control plane and have no meaning at another registrar:
+#
+# * **CNAMEs** pointing at ``*.domaincontrol.com`` — the Domain Connect
+#   discovery record (``_domainconnect``), ``autodiscover``, and similar
+#   GoDaddy-internal hostnames.
+# * **A records** with ``data == "Parked"`` — a GoDaddy panel artefact for
+#   domains without a real DNS setup. The string is not a valid IP and
+#   Combell rejects it with ``dns_invalid_content`` (400) at populate
+#   time, so filtering it before the diff avoids breaking the whole
+#   populate step over a placeholder.
+#
+# A warning-level pre-flight check flags the parking placeholder so the
+# operator knows they need to configure an apex A at Combell after the
+# transfer lands — see :mod:`app.migrations.preflight`.
+_GODADDY_INTERNAL_HOSTNAME_SUFFIXES = ("domaincontrol.com",)
+_GODADDY_PARKED_SENTINEL = "parked"
+
+
+def _is_godaddy_internal_record(record: DnsRecord) -> bool:
+    """Return True for records that only belong in a GoDaddy-hosted zone."""
+    data = (record.data or "").strip().lower()
+    if not data:
+        return False
+    if record.type == "CNAME":
+        target = data.rstrip(".")
+        return any(
+            target == suffix or target.endswith("." + suffix)
+            for suffix in _GODADDY_INTERNAL_HOSTNAME_SUFFIXES
+        )
+    if record.type == "A" and data == _GODADDY_PARKED_SENTINEL:
+        return True
+    return False
+
+
 def godaddy_to_combell_record(record: DnsRecord, *, domain: str) -> DnsRecord:
     """Translate one GoDaddy-shaped DNS record into Combell's expectations.
 
@@ -130,7 +165,11 @@ def godaddy_to_combell_record(record: DnsRecord, *, domain: str) -> DnsRecord:
 def godaddy_to_combell_records(
     records: list[DnsRecord], *, domain: str
 ) -> list[DnsRecord]:
-    return [godaddy_to_combell_record(r, domain=domain) for r in records]
+    return [
+        godaddy_to_combell_record(r, domain=domain)
+        for r in records
+        if not _is_godaddy_internal_record(r)
+    ]
 
 
 # --- dispatch --------------------------------------------------------------

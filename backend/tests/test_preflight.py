@@ -77,6 +77,37 @@ def test_caa_records_raise_warning_only() -> None:
     assert any(r.key == "dns.caa_records" and not r.ok for r in report.results)
 
 
+def test_godaddy_parking_placeholder_raises_warning_only() -> None:
+    """A 'Parked' A-record is a GoDaddy artefact — warn, do not block."""
+    records = [DnsRecord(type="A", name="@", data="Parked", ttl=600)]
+    report = run_preflight(_detail("example.com"), records, now=NOW)
+    assert report.passed
+    warning = next(
+        r for r in report.results if r.key == "dns.godaddy_parking_placeholder"
+    )
+    assert warning.severity == "warning"
+    assert not warning.ok
+    assert "Parked" in warning.message
+
+
+def test_godaddy_parking_check_passes_when_absent() -> None:
+    records = [DnsRecord(type="A", name="@", data="1.2.3.4", ttl=3600)]
+    report = run_preflight(_detail("example.com"), records, now=NOW)
+    check = next(
+        r for r in report.results if r.key == "dns.godaddy_parking_placeholder"
+    )
+    assert check.ok
+
+
+def test_godaddy_parking_check_is_case_insensitive() -> None:
+    records = [DnsRecord(type="A", name="@", data="parked", ttl=600)]
+    report = run_preflight(_detail("example.com"), records, now=NOW)
+    check = next(
+        r for r in report.results if r.key == "dns.godaddy_parking_placeholder"
+    )
+    assert not check.ok
+
+
 def test_be_ruleset_treats_privacy_as_warning_only() -> None:
     report = run_preflight(
         _detail("fixture.be", privacy=True, transfer_away_eligible_at=None),

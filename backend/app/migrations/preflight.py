@@ -166,6 +166,32 @@ def _run_common(
         )
     )
 
+    # GoDaddy returns ``data: "Parked"`` on A records for domains without a
+    # real DNS setup — the string is not a valid IP and would 400 at
+    # Combell. The translator filters it out of the populate, but we
+    # surface a warning so the operator knows to configure an apex A at
+    # Combell after the transfer (otherwise the domain won't resolve).
+    parking_present = any(
+        r.type == "A" and (r.data or "").strip().lower() == "parked"
+        for r in records
+    )
+    results.append(
+        CheckResult(
+            key="dns.godaddy_parking_placeholder",
+            severity="warning",
+            ok=not parking_present,
+            message=(
+                "No GoDaddy parking placeholder detected."
+                if not parking_present
+                else (
+                    "GoDaddy parking placeholder (A @ 'Parked') detected. "
+                    "It will be filtered out during populate — configure a "
+                    "real apex A record at Combell after the transfer."
+                )
+            ),
+        )
+    )
+
     _ = now  # reserved for future time-based common checks
     return results
 

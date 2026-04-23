@@ -146,3 +146,104 @@ def test_translate_records_passes_through_unknown_pair() -> None:
     src = [DnsRecord(type="CNAME", name="www", data="@", ttl=3600)]
     out = translate_records("totally_unknown", src, domain="example.com")
     assert out is src
+
+
+# --- GoDaddy-internal record filter ---------------------------------------
+
+
+def test_domainconnect_cname_is_filtered_out() -> None:
+    """GoDaddy's Domain Connect discovery CNAME must not land at Combell."""
+    src = [
+        DnsRecord(
+            type="CNAME",
+            name="_domainconnect",
+            data="_domainconnect.gd.domaincontrol.com",
+            ttl=3600,
+        ),
+        DnsRecord(type="A", name="@", data="1.2.3.4", ttl=3600),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert [r.name for r in out] == ["@"]
+
+
+def test_any_cname_into_domaincontrol_is_filtered() -> None:
+    """Any *.domaincontrol.com target is GoDaddy-owned infrastructure."""
+    src = [
+        DnsRecord(
+            type="CNAME", name="autodiscover", data="autodiscover.domaincontrol.com", ttl=3600
+        ),
+        DnsRecord(type="CNAME", name="blog", data="blog.example.net", ttl=3600),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert [r.name for r in out] == ["blog"]
+
+
+def test_cname_ending_in_lookalike_domain_is_kept() -> None:
+    """Only the real ``domaincontrol.com`` suffix gets filtered — not a
+    user-owned domain that happens to end with the same letters."""
+    src = [
+        DnsRecord(
+            type="CNAME", name="www", data="fakedomaincontrol.com", ttl=3600
+        ),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert len(out) == 1
+
+
+def test_filter_ignores_trailing_dot_and_casing() -> None:
+    src = [
+        DnsRecord(
+            type="CNAME",
+            name="_domainconnect",
+            data="_domainconnect.GD.Domaincontrol.COM.",
+            ttl=3600,
+        ),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert out == []
+
+
+def test_non_cname_pointing_at_domaincontrol_is_untouched() -> None:
+    """TXT / A records are not filtered — only CNAMEs are GoDaddy-internal."""
+    src = [
+        DnsRecord(
+            type="TXT", name="@", data="some-random-domaincontrol.com value", ttl=3600
+        ),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert len(out) == 1
+
+
+def test_parked_a_record_is_filtered_out() -> None:
+    """GoDaddy returns ``data: "Parked"`` for domains without real DNS —
+    a panel artefact that would 400 at Combell (not a valid IP)."""
+    src = [
+        DnsRecord(type="A", name="@", data="Parked", ttl=600),
+        DnsRecord(type="A", name="www", data="1.2.3.4", ttl=3600),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert [r.data for r in out] == ["1.2.3.4"]
+
+
+def test_parked_filter_is_case_insensitive_and_trims_whitespace() -> None:
+    src = [
+        DnsRecord(type="A", name="@", data="parked", ttl=600),
+        DnsRecord(type="A", name="a", data="PARKED", ttl=600),
+        DnsRecord(type="A", name="b", data="  Parked  ", ttl=600),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert out == []
+
+
+def test_parked_filter_only_matches_exact_value() -> None:
+    """Substring match would be too greedy. Only exact 'Parked' counts."""
+    src = [DnsRecord(type="A", name="@", data="1.2.3.Parked", ttl=3600)]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert len(out) == 1
+
+
+def test_parked_filter_does_not_touch_non_a_records() -> None:
+    """TXT with literal 'Parked' is user-authored; keep it."""
+    src = [DnsRecord(type="TXT", name="@", data="Parked", ttl=3600)]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert len(out) == 1
