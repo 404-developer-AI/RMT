@@ -93,6 +93,35 @@ def _assert_isolated_db() -> None:
 _assert_isolated_db()
 
 
+def _bootstrap_schema() -> None:
+    """Run ``alembic upgrade head`` against the test DB before any test runs.
+
+    The companion ``scripts/dev/create-db.sql`` only creates the empty
+    ``rmt_dev_test`` database; the schema still has to be applied. Doing
+    that here keeps the test setup to a single step for the operator:
+    once ``rmt_dev_test`` exists, ``pytest`` just works and picks up any
+    newly-added migrations automatically.
+
+    We suppress alembic's usual ``fileConfig`` by injecting a minimal in-
+    memory ``Config`` instance that only sets ``script_location``. The
+    database URL comes from :mod:`app.config`, which is already pointing
+    at the test DB by this point.
+    """
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    cfg = Config()
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", get_settings().database_url)
+    command.upgrade(cfg, "head")
+
+
+_bootstrap_schema()
+
+
 @pytest.fixture(autouse=True)
 async def _dispose_engine_between_tests() -> AsyncIterator[None]:
     """Drop pooled asyncpg connections after every test.
