@@ -1,9 +1,6 @@
-"""Combell registrar bindings.
+"""Combell registrar bindings — HMAC signer + destination adapter."""
 
-Currently exposes the HMAC request signer; the HTTP client and adapter
-land in follow-up PRs (see ROADMAP.md V1 / Registrar adapters).
-"""
-
+from app.registrars.combell.adapter import CombellAdapter
 from app.registrars.combell.signer import CombellSigner, SignedRequest
 
-__all__ = ["CombellSigner", "SignedRequest"]
+__all__ = ["CombellAdapter", "CombellSigner", "SignedRequest"]
