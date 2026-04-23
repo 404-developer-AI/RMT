@@ -71,9 +71,21 @@ def _record_key(record: DnsRecord) -> tuple[str, str]:
     return record.type, record.name
 
 
+#: Record types where the ``priority`` field is semantically meaningful.
+#: Everything else either ignores priority (A / AAAA / CNAME / TXT / CAA /
+#: ALIAS / TLSA) or stores it in a type-specific sub-field we do not model
+#: yet (SRV uses ``service`` / ``weight`` / ``target`` alongside the
+#: priority). Combell's DnsRecord schema defaults ``priority`` to ``10``
+#: on every read — including A/TXT — so comparing source (``None``) to
+#: destination (``10``) produced a phantom "update needed" verdict for
+#: every non-MX record after a round-trip.
+_PRIORITY_TYPES = frozenset({"MX", "SRV"})
+
+
 def _value_tuple(record: DnsRecord) -> tuple[str, int, int | None]:
     """What needs to match for a record to be considered up-to-date."""
-    return record.data, record.ttl, record.priority
+    priority = record.priority if record.type in _PRIORITY_TYPES else None
+    return record.data, record.ttl, priority
 
 
 def compute_diff(

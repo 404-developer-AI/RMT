@@ -112,6 +112,33 @@ def test_diff_never_deletes_soa_records_at_destination() -> None:
     assert diff.to_delete == []
 
 
+def test_diff_ignores_priority_on_non_priority_types() -> None:
+    """Combell returns priority=10 on every A / TXT read even though we
+    never set it. A strict tuple compare then loops on phantom updates.
+    The diff must treat priority as irrelevant outside MX / SRV."""
+    src = [
+        DnsRecord(type="A", name="@", data="1.2.3.4", ttl=3600, priority=None),
+        DnsRecord(type="TXT", name="@", data="v=spf1 -all", ttl=3600, priority=None),
+    ]
+    dst = [
+        DnsRecord(type="A", name="@", data="1.2.3.4", ttl=3600, priority=10),
+        DnsRecord(type="TXT", name="@", data="v=spf1 -all", ttl=3600, priority=10),
+    ]
+    diff = compute_diff(
+        source_records=src, destination_records=dst, supported_types=SUPPORTED
+    )
+    assert diff.is_empty, "priority default should not cause a mismatch"
+
+
+def test_diff_still_respects_priority_for_mx_records() -> None:
+    src = [DnsRecord(type="MX", name="@", data="mail.example.com", ttl=3600, priority=10)]
+    dst = [DnsRecord(type="MX", name="@", data="mail.example.com", ttl=3600, priority=20)]
+    diff = compute_diff(
+        source_records=src, destination_records=dst, supported_types=SUPPORTED
+    )
+    assert len(diff.to_update) == 1
+
+
 def test_diff_zone_replace_full_example() -> None:
     """Snapshot has its own records; Combell zone has parking + defaults."""
     src = [
