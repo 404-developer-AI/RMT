@@ -139,6 +139,62 @@ def test_diff_still_respects_priority_for_mx_records() -> None:
     assert len(diff.to_update) == 1
 
 
+def test_diff_deletes_extra_mx_at_same_name() -> None:
+    """Combell ships a backup MX (``mx.backup.mailprotect.be``) alongside the
+    operator's imported MX. Keying the diff on (type, name) alone used to
+    collapse both destination MX records into a single slot so the backup
+    silently survived. The diff must treat (type, name) as a multiset."""
+    src = [
+        DnsRecord(type="MX", name="@", data="mail.example.com", ttl=3600, priority=10),
+    ]
+    dst = [
+        DnsRecord(type="MX", name="@", data="mail.example.com", ttl=3600, priority=10),
+        # Combell default — must be scheduled for deletion.
+        DnsRecord(
+            type="MX", name="@", data="mx.backup.mailprotect.be", ttl=3600, priority=50
+        ),
+    ]
+    diff = compute_diff(
+        source_records=src, destination_records=dst, supported_types=SUPPORTED
+    )
+    assert diff.to_create == []
+    assert diff.to_update == []
+    assert len(diff.to_delete) == 1
+    assert diff.to_delete[0].data == "mx.backup.mailprotect.be"
+
+
+def test_diff_multi_value_txt_records_match_by_content() -> None:
+    """SPF + DKIM commonly share (TXT, @) — each must match by value, not
+    collapse under a single key."""
+    spf = DnsRecord(
+        type="TXT", name="@", data="v=spf1 include:_spf.example -all", ttl=3600
+    )
+    dkim = DnsRecord(type="TXT", name="@", data="v=DKIM1; p=MIG...", ttl=3600)
+    src = [spf, dkim]
+    dst = [dkim, spf]  # same set, different ordering
+    diff = compute_diff(
+        source_records=src, destination_records=dst, supported_types=SUPPORTED
+    )
+    assert diff.is_empty
+
+
+def test_diff_multi_value_txt_with_extra_record_schedules_delete() -> None:
+    """Two TXT at the same name, destination has a third — extra -> delete."""
+    spf = DnsRecord(type="TXT", name="@", data="v=spf1 -all", ttl=3600)
+    dkim = DnsRecord(type="TXT", name="@", data="v=DKIM1; p=AAA", ttl=3600)
+    verification = DnsRecord(
+        type="TXT", name="@", data="google-site-verification=old", ttl=3600
+    )
+    src = [spf, dkim]
+    dst = [spf, dkim, verification]
+    diff = compute_diff(
+        source_records=src, destination_records=dst, supported_types=SUPPORTED
+    )
+    assert diff.to_create == []
+    assert diff.to_update == []
+    assert [r.data for r in diff.to_delete] == [verification.data]
+
+
 def test_diff_zone_replace_full_example() -> None:
     """Snapshot has its own records; Combell zone has parking + defaults."""
     src = [

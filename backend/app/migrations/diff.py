@@ -24,6 +24,7 @@ the audit log records the original and clamped values side by side.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 
@@ -67,7 +68,11 @@ class ZoneDiff:
 
 
 def _record_key(record: DnsRecord) -> tuple[str, str]:
-    """Identity key for diffing. Combell stores one record per (type, name)."""
+    """Group key for diffing. A single (type, name) can hold MULTIPLE records
+    — MX with different priorities, TXT with SPF + DKIM, NS with several
+    nameservers. The diff groups by this key and then matches records
+    within each group by value, so duplicates never collapse into one slot.
+    """
     return record.type, record.name
 
 
@@ -99,6 +104,18 @@ def compute_diff(
     Records whose ``type`` is not in ``supported_types`` are moved to
     ``skipped`` and never submitted. NS / SOA records are managed by the
     registrar itself at Combell, so we explicitly drop them here too.
+
+    A single ``(type, name)`` can legitimately hold multiple records. The
+    diff groups both sides by that key and then matches records within a
+    group by value (``data`` + ``ttl`` + priority-if-applicable):
+
+    * One-to-one at a key with differing value -> in-place ``update`` so
+      we keep Combell's record id and issue a single PUT.
+    * Several records on either side -> every unmatched source record
+      becomes a ``create`` and every unmatched destination record a
+      ``delete``. This is what catches Combell's default
+      ``mx.backup.mailprotect.be`` secondary MX that sits next to the
+      operator's own MX and otherwise never shows up in the diff.
     """
     supported = set(supported_types)
     supported.discard("NS")  # NS records are managed by Combell's nameserver API
@@ -115,37 +132,47 @@ def compute_diff(
         r for r in destination_records if r.type in supported
     ]
 
-    destination_map = {_record_key(r): r for r in destination_relevant}
-    source_map: dict[tuple[str, str], DnsRecord] = {}
+    source_by_key: dict[tuple[str, str], list[DnsRecord]] = defaultdict(list)
     for r in source_relevant:
-        # Multiple records can share a (type, name) — notably TXT and MX.
-        # The diff engine then has to compare lists. For the simple V1
-        # "populate into an empty zone" case, duplicates are rare enough
-        # that we let the registrar handle them: we emit a create for each.
-        source_map.setdefault(_record_key(r), r)
+        source_by_key[_record_key(r)].append(r)
+
+    dest_by_key: dict[tuple[str, str], list[DnsRecord]] = defaultdict(list)
+    for r in destination_relevant:
+        dest_by_key[_record_key(r)].append(r)
 
     to_create: list[DnsRecord] = []
     to_update: list[DnsRecord] = []
-    for key, rec in source_map.items():
-        existing = destination_map.get(key)
-        if existing is None:
-            to_create.append(rec)
-        elif _value_tuple(existing) != _value_tuple(rec):
-            # Source records never carry a destination id, so graft the
-            # destination's id onto the update payload. Combell's PUT
-            # /v2/dns/{domain}/records/{id} needs this.
-            to_update.append(replace(rec, id=existing.id))
+    to_delete: list[DnsRecord] = []
 
-    # Zone-replace: every destination record that has no counterpart in
-    # the source snapshot is scheduled for deletion. This is what wipes
-    # Combell's default parking / mail-placeholder records after a
-    # transfer — without this step, the populate would silently leave
-    # stale records alongside the migrated ones.
-    to_delete = [
-        existing
-        for key, existing in destination_map.items()
-        if key not in source_map
-    ]
+    for key in set(source_by_key) | set(dest_by_key):
+        s_list = source_by_key.get(key, [])
+        d_list = dest_by_key.get(key, [])
+
+        if len(s_list) == 1 and len(d_list) == 1:
+            # Exactly one record on each side — preserve the id-preserving
+            # in-place update path. Combell's PUT is cheaper than DELETE +
+            # POST and avoids a brief NXDOMAIN window for the record.
+            s, d = s_list[0], d_list[0]
+            if _value_tuple(s) != _value_tuple(d):
+                to_update.append(replace(s, id=d.id))
+            continue
+
+        # Multi-value or one-sided: walk the source list, consume matching
+        # destination records by value, and treat the rest as create /
+        # delete. Update-in-place would need a heuristic to pair "old"
+        # with "new" and that is not worth the ambiguity here.
+        d_remaining = list(d_list)
+        for s in s_list:
+            value = _value_tuple(s)
+            match_index = next(
+                (i for i, d in enumerate(d_remaining) if _value_tuple(d) == value),
+                None,
+            )
+            if match_index is None:
+                to_create.append(s)
+            else:
+                d_remaining.pop(match_index)
+        to_delete.extend(d_remaining)
 
     return ZoneDiff(
         to_create=to_create,
