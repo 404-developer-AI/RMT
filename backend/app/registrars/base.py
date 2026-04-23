@@ -71,6 +71,13 @@ class DnsRecord:
     accepts it (e.g. ``"1.2.3.4"`` for an A record, structured priority +
     target for MX). The diff engine compares records on the (type, name,
     data, ttl) tuple.
+
+    ``id`` is the registrar-assigned opaque identifier for a record when
+    the DTO is produced by a destination read. Combell's PUT / DELETE
+    endpoints take the id as a path segment (``/records/{record_id}``),
+    so the diff engine threads it from the destination list through to
+    the update / delete calls. Source-side reads (GoDaddy) leave it as
+    ``None``; creates at the destination also start with ``None``.
     """
 
     type: Literal["A", "AAAA", "CAA", "CNAME", "MX", "TXT", "SRV", "ALIAS", "TLSA", "NS"]
@@ -78,6 +85,7 @@ class DnsRecord:
     data: str
     ttl: int
     priority: int | None = None
+    id: str | None = None
 
 
 @dataclass(frozen=True)

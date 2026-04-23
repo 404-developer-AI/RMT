@@ -211,6 +211,7 @@ class CombellAdapter(RegistrarAdapter):
                 data=str(row.get("content") or row.get("data", "")),
                 ttl=int(row.get("ttl", 3600)),
                 priority=row.get("priority"),
+                id=row.get("id"),
             )
             for row in rows
         ]
@@ -323,33 +324,83 @@ class CombellAdapter(RegistrarAdapter):
         )
 
     async def update_dns_record(self, name: str, record: DnsRecord) -> None:
+        """Edit an existing record. Uses ``PUT /v2/dns/{name}/records/{id}``.
+
+        If the caller-supplied record does not carry an ``id`` (the engine
+        pulls source-side snapshots here after a diff), we look it up in
+        the current destination zone by matching ``(type, record_name)``.
+        """
         if self.dry_run:
             logger.info("combell.dns.update.dry_run", domain=name, record=asdict(record))
             return
         if self.mock:
             logger.info("combell.dns.update.mock", domain=name, record=asdict(record))
             return
-        # Combell's update uses a composite key (type,name) rather than an
-        # opaque id in its REST surface; the simplest cross-version pattern
-        # is delete + create. V1 migrations only ever create records into an
-        # empty zone, so update() is rarely called — keep the pattern simple.
-        await self.delete_dns_record(name, record)
-        await self.create_dns_record(name, record)
+        record_id = record.id or await self._find_record_id(name, record)
+        if record_id is None:
+            raise RegistrarHTTPError(
+                f"Could not find a Combell record id for {record.type} {record.name!r} "
+                f"on {name}; cannot update without it."
+            )
+        body = _record_to_combell_body(record)
+        await self._request_json(
+            "PUT",
+            f"/v2/dns/{name}/records/{record_id}",
+            body=body,
+            expected_status=(200, 202, 204),
+        )
 
     async def delete_dns_record(self, name: str, record: DnsRecord) -> None:
+        """Delete a record by its Combell id.
+
+        Combell's DELETE lives at ``/v2/dns/{domain}/records/{record_id}``.
+        The list endpoint only accepts GET/POST, so a filter-based delete
+        (``?type=A&record_name=foo``) returns 405. If the passed record
+        has no id, resolve one via :meth:`_find_record_id` before firing.
+        """
         if self.dry_run:
             logger.info("combell.dns.delete.dry_run", domain=name, record=asdict(record))
             return
         if self.mock:
             logger.info("combell.dns.delete.mock", domain=name, record=asdict(record))
             return
-        params = {"type": record.type, "record_name": record.name}
+        record_id = record.id or await self._find_record_id(name, record)
+        if record_id is None:
+            # Nothing at the destination matched — treat as already deleted.
+            logger.info(
+                "combell.dns.delete.not_found",
+                domain=name,
+                type=record.type,
+                name_=record.name,
+            )
+            return
         await self._request_json(
             "DELETE",
-            f"/v2/dns/{name}/records",
-            params=params,
+            f"/v2/dns/{name}/records/{record_id}",
             expected_status=(200, 202, 204),
         )
+
+    async def _find_record_id(self, domain: str, record: DnsRecord) -> str | None:
+        """Resolve the destination id of a record by its ``(type, name, content)``.
+
+        Falls back to ``(type, name)`` if nothing matches on content — Combell
+        can have at most one record per (type, name) for A/AAAA/CNAME, so
+        that pass is still unique for the common case. For TXT / MX this
+        may return an arbitrary match, which is acceptable: the engine's
+        "replace this record" intent is already satisfied.
+        """
+        current = await self.list_dns_records(domain)
+        for existing in current:
+            if (
+                existing.type == record.type
+                and existing.name == record.name
+                and existing.data == record.data
+            ):
+                return existing.id
+        for existing in current:
+            if existing.type == record.type and existing.name == record.name:
+                return existing.id
+        return None
 
     async def set_nameservers(self, name: str, nameservers: Sequence[str]) -> None:
         body = {"name_servers": list(nameservers)}

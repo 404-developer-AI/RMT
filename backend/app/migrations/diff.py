@@ -119,7 +119,10 @@ def compute_diff(
         if existing is None:
             to_create.append(rec)
         elif _value_tuple(existing) != _value_tuple(rec):
-            to_update.append(rec)
+            # Source records never carry a destination id, so graft the
+            # destination's id onto the update payload. Combell's PUT
+            # /v2/dns/{domain}/records/{id} needs this.
+            to_update.append(replace(rec, id=existing.id))
 
     # Zone-replace: every destination record that has no counterpart in
     # the source snapshot is scheduled for deletion. This is what wipes

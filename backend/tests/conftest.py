@@ -32,6 +32,30 @@ os.environ.setdefault("APP_SECRET", "rmt-test-secret-must-be-at-least-sixteen-ch
 os.environ.setdefault("APP_ENV", "testing")
 
 
+def _read_dev_url_from_env_file() -> str | None:
+    """Fallback when ``DATABASE_URL`` is not exported in the shell.
+
+    pydantic-settings reads ``.env`` at import time for the app proper,
+    but we need the URL *before* the app imports so we can rewrite it.
+    A tiny line-based parser is enough for the conftest use-case — we
+    only look at ``DATABASE_URL=...`` and ignore everything else.
+    """
+    from pathlib import Path
+
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    if not env_path.is_file():
+        return None
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip() != "DATABASE_URL":
+            continue
+        return value.strip().strip('"').strip("'") or None
+    return None
+
+
 def _rewrite_db_url_for_tests() -> None:
     """Point the test process at a dedicated ``*_test`` database.
 
@@ -42,7 +66,7 @@ def _rewrite_db_url_for_tests() -> None:
     if explicit:
         os.environ["DATABASE_URL"] = explicit
         return
-    dev_url = os.environ.get("DATABASE_URL")
+    dev_url = os.environ.get("DATABASE_URL") or _read_dev_url_from_env_file()
     if not dev_url:
         # No DATABASE_URL set at all — nothing to derive from. Let app.config
         # use its own default, which in pydantic-settings lands in the
@@ -54,7 +78,8 @@ def _rewrite_db_url_for_tests() -> None:
         return
     dbname = parsed.path.lstrip("/")
     if dbname.endswith("_test"):
-        return  # already a test DB
+        os.environ["DATABASE_URL"] = dev_url
+        return
     new_path = f"/{dbname}_test"
     os.environ["DATABASE_URL"] = urlunparse(parsed._replace(path=new_path))
 
