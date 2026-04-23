@@ -56,9 +56,10 @@ def fixture_domains() -> list[dict[str, Any]]:
 def fixture_domain_detail(name: str) -> dict[str, Any]:
     for row in fixture_domains():
         if row["domain"] == name:
+            # GoDaddy v1 shape: contact roles at top level, not nested.
             return {
                 **row,
-                "contacts": _fixture_contacts(),
+                **_fixture_contacts(),
                 "transferProtected": row["locked"],
             }
     raise KeyError(f"No fixture for domain {name!r}")

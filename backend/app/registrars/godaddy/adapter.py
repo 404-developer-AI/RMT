@@ -191,22 +191,19 @@ class GoDaddyAdapter(RegistrarAdapter):
 
     @staticmethod
     def _to_detail(row: dict[str, Any]) -> DomainDetail:
-        contacts_raw: dict[str, Any] = row.get("contacts") or {}
-        if "contactRegistrant" in contacts_raw:
-            # GoDaddy puts each contact role under its own key
-            contacts = Contacts(
-                registrant=contacts_raw.get("contactRegistrant") or {},
-                admin=contacts_raw.get("contactAdmin"),
-                tech=contacts_raw.get("contactTech"),
-                billing=contacts_raw.get("contactBilling"),
-            )
-        else:
-            # Some endpoints hand the registrant back at the top level.
-            contacts = Contacts(
-                registrant={
-                    k: row[k] for k in ("contactRegistrant",) if k in row
-                } or contacts_raw
-            )
+        # GoDaddy v1 puts the four contact roles at the top level of the
+        # /v1/domains/{domain} response — ``contactRegistrant``,
+        # ``contactAdmin``, ``contactTech``, ``contactBilling``. A nested
+        # ``contacts`` wrapper is accepted too as a defensive fallback so
+        # fixtures that follow the older shape still parse correctly.
+        nested = row.get("contacts")
+        source: dict[str, Any] = nested if isinstance(nested, dict) else row
+        contacts = Contacts(
+            registrant=source.get("contactRegistrant") or {},
+            admin=source.get("contactAdmin"),
+            tech=source.get("contactTech"),
+            billing=source.get("contactBilling"),
+        )
         return DomainDetail(
             name=row["domain"],
             status=str(row.get("status", "UNKNOWN")),
