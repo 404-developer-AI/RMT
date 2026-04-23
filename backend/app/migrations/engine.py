@@ -350,11 +350,40 @@ async def populate_and_verify(
     # same (type, name) cannot collide. NS / SOA are already filtered out
     # of diff.to_delete by compute_diff, so Combell's nameservers stay put.
     for record in diff.to_delete:
-        await destination.delete_dns_record(plan.domain, record)
+        logger.info(
+            "migration.populate.delete",
+            domain=plan.domain,
+            type=record.type,
+            record_name=record.name,
+            data=record.data,
+        )
+        await _apply_with_context(
+            destination.delete_dns_record, plan.domain, record, action="delete",
+        )
     for record in diff.to_create:
-        await destination.create_dns_record(plan.domain, record)
+        logger.info(
+            "migration.populate.create",
+            domain=plan.domain,
+            type=record.type,
+            record_name=record.name,
+            data=record.data,
+            ttl=record.ttl,
+            priority=record.priority,
+        )
+        await _apply_with_context(
+            destination.create_dns_record, plan.domain, record, action="create",
+        )
     for record in diff.to_update:
-        await destination.update_dns_record(plan.domain, record)
+        logger.info(
+            "migration.populate.update",
+            domain=plan.domain,
+            type=record.type,
+            record_name=record.name,
+            data=record.data,
+        )
+        await _apply_with_context(
+            destination.update_dns_record, plan.domain, record, action="update",
+        )
     duration_ms = int((time.perf_counter() - started) * 1000)
 
     # Verify — read the zone back and diff against the snapshot.
@@ -497,6 +526,37 @@ async def recover_from_destination(
     return await populate_and_verify(
         session, plan, destination=destination, actor=actor
     )
+
+
+async def _apply_with_context(
+    op, domain: str, record: DnsRecord, *, action: str
+) -> None:
+    """Wrap a single DNS mutation so the error names the offending record.
+
+    Without this, a batch failure surfaces as "Unexpected status 400" and
+    the operator has to cross-reference PowerShell logs to find which
+    record tripped the registrar. We prefix the error message with the
+    record's identifying fields and preserve the registrar's body snippet
+    via ``__cause__`` / ``RegistrarHTTPError``'s ``body`` attribute.
+    """
+    from app.registrars.http import RegistrarHTTPError
+
+    try:
+        await op(domain, record)
+    except RegistrarHTTPError as exc:
+        raise RegistrarHTTPError(
+            f"{action} {record.type} {record.name!r} "
+            f"(data={record.data!r}, ttl={record.ttl}, "
+            f"priority={record.priority}) failed: {exc}",
+            status_code=exc.status_code,
+            body=exc.body,
+        ) from exc
+    except Exception as exc:
+        raise MigrationEngineError(
+            f"{action} {record.type} {record.name!r} "
+            f"(data={record.data!r}, ttl={record.ttl}, "
+            f"priority={record.priority}) failed: {exc}"
+        ) from exc
 
 
 async def _destination_owns_domain(
