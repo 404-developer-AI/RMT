@@ -270,6 +270,14 @@ info "Building container images (first build takes a few minutes)"
 cd "$INSTALL_DIR"
 docker compose build
 
+# Bootstrap the database schema before the backend starts accepting
+# requests. Without this, a fresh install hits ProgrammingError on the
+# first API call because no tables exist yet. The ``run --rm`` form
+# brings up the postgres dependency, applies migrations in a throwaway
+# container, and exits — same pattern update.sh uses for upgrades.
+info "Applying database migrations (alembic upgrade head)"
+docker compose run --rm backend alembic upgrade head
+
 info "Starting the stack"
 docker compose up -d
 
