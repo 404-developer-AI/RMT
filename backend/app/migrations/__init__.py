@@ -1,4 +1,4 @@
-"""Migration engine — lifecycle, registry, diff. Engine code lands per-feature."""
+"""Migration engine — lifecycle, registry, diff, snapshot, pre-flight, poller."""
 
 from app.migrations.registry import (
     MIGRATION_TYPES,

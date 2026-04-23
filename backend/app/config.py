@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_env: Literal["development", "staging", "production"] = "development"
+    app_env: Literal["development", "staging", "production", "testing"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     cors_allowed_origins: str = "http://localhost:5173"
 

@@ -9,6 +9,8 @@ from collections.abc import AsyncIterator
 # / get_cipher. CI and dev machines with a blank .env would otherwise fail at
 # cipher construction. The value is test-only and never leaves this process.
 os.environ.setdefault("APP_SECRET", "rmt-test-secret-must-be-at-least-sixteen-chars")
+# Keep the background migration poller out of the test event loop.
+os.environ.setdefault("APP_ENV", "testing")
 
 import pytest
 from httpx import ASGITransport, AsyncClient
