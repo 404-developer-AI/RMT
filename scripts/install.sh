@@ -66,7 +66,11 @@ ask_password() {
 }
 
 gen_password() {
-    tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32
+    # `head -c 32` closes the pipe once it has 32 bytes, which makes `tr` die
+    # with SIGPIPE (exit 141). Under `set -o pipefail` that would abort the
+    # whole installer silently, so swallow the pipeline's non-zero status —
+    # stdout has already been written by the time `head` exits.
+    LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32 || true
 }
 
 # -----------------------------------------------------------------------------
