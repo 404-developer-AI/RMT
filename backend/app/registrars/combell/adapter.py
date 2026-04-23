@@ -99,6 +99,12 @@ class CombellAdapter(RegistrarAdapter):
             self._client = None
 
     async def test_connection(self) -> bool:
+        """401 from Combell has three common causes — IP not whitelisted,
+        wrong api_key, or a bad signature. The generic ``return False`` loses
+        that detail, so we raise with Combell's own response body (truncated).
+        The credentials endpoint's generic ``except Exception`` then surfaces
+        the string in the UI, giving the operator an actionable next step.
+        """
         if self.mock:
             return True
         client = self._get_client()
@@ -109,15 +115,26 @@ class CombellAdapter(RegistrarAdapter):
             headers=headers,
             params={"take": 1},
         )
+        if response.status_code == 200:
+            return True
         if response.status_code in (401, 403):
-            return False
-        if response.status_code >= 400:
-            raise RegistrarHTTPError(
-                f"Combell returned {response.status_code} on test_connection",
-                status_code=response.status_code,
-                body=response.text,
+            body = (response.text or "").strip()
+            hint = _combell_auth_hint(body)
+            detail = f"HTTP {response.status_code}"
+            if body:
+                detail += f" — {body[:200]}"
+            detail += f" ({hint})"
+            logger.warning(
+                "combell.test_connection.rejected",
+                status=response.status_code,
+                body_snippet=body[:200],
             )
-        return True
+            raise RegistrarHTTPError(detail, status_code=response.status_code, body=body)
+        raise RegistrarHTTPError(
+            f"Combell returned HTTP {response.status_code} on test_connection",
+            status_code=response.status_code,
+            body=response.text,
+        )
 
     # --- signing ----------------------------------------------------------
 
@@ -349,6 +366,29 @@ def _extract_job_id(payload: Any) -> str:
                 return str(nested)
     raise RegistrarHTTPError(
         f"Combell response did not contain a provisioning-job id: {payload!r}"
+    )
+
+
+def _combell_auth_hint(body: str) -> str:
+    """Map Combell's 401/403 body text to a human-readable next action.
+
+    Combell's error strings are not perfectly stable, so we match on
+    substrings that have been observed in production responses. When
+    nothing matches we return the generic hint which points the operator
+    at the whitelist + key pair checklist.
+    """
+    lowered = body.lower()
+    ip_keywords = ("whitelist", "not allowed", "denied")
+    if "ip" in lowered and any(k in lowered for k in ip_keywords):
+        return "source IP is not whitelisted at Combell — add it under API configuration"
+    if "signature" in lowered or "hmac" in lowered:
+        return "signature rejected — check that api_secret is pasted exactly as Combell provided it"
+    if "unauthorized" in lowered or "invalid key" in lowered or "not found" in lowered:
+        return "api_key is unknown to Combell — verify it in the control panel"
+    return (
+        "check: (1) this host's public IP is whitelisted at Combell, "
+        "(2) api_key matches the one in the Combell control panel, "
+        "(3) api_secret was pasted exactly (it is already base64)"
     )
 
 
