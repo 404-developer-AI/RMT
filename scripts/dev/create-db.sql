@@ -27,4 +27,12 @@ SELECT 'CREATE DATABASE rmt_dev OWNER rmt_dev ENCODING ''UTF8'''
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'rmt_dev')
 \gexec
 
+-- Dedicated database for the pytest suite so tests can truncate rows
+-- freely without nuking the dev DB's configured credentials / migrations.
+-- The backend picks it up automatically in APP_ENV=testing (see conftest.py).
+SELECT 'CREATE DATABASE rmt_dev_test OWNER rmt_dev ENCODING ''UTF8'''
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'rmt_dev_test')
+\gexec
+
 GRANT ALL PRIVILEGES ON DATABASE rmt_dev TO rmt_dev;
+GRANT ALL PRIVILEGES ON DATABASE rmt_dev_test TO rmt_dev;
