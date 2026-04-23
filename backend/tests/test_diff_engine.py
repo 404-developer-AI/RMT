@@ -66,3 +66,73 @@ def test_diff_clamps_source_ttls_before_comparing() -> None:
         source_records=src, destination_records=dst, supported_types=SUPPORTED
     )
     assert diff.is_empty
+
+
+# --- zone-replace (delete) behaviour --------------------------------------
+
+
+def test_diff_schedules_delete_for_destination_only_records() -> None:
+    """Combell's default parking A record should be scheduled for deletion."""
+    src = [_a("@", "1.2.3.4")]
+    dst = [
+        _a("@", "1.2.3.4"),
+        # Extra default Combell record not present in snapshot
+        DnsRecord(type="A", name="parking", data="81.89.121.1", ttl=3600),
+    ]
+    diff = compute_diff(
+        source_records=src, destination_records=dst, supported_types=SUPPORTED
+    )
+    assert diff.to_create == []
+    assert diff.to_update == []
+    assert len(diff.to_delete) == 1
+    assert diff.to_delete[0].name == "parking"
+
+
+def test_diff_never_deletes_ns_records_at_destination() -> None:
+    """NS records are owned by the registrar — must survive zone-replace."""
+    src = [_a("@", "1.2.3.4")]
+    dst = [
+        DnsRecord(type="NS", name="@", data="ns1.combell.be", ttl=3600),
+        DnsRecord(type="NS", name="@", data="ns2.combell.be", ttl=3600),
+    ]
+    diff = compute_diff(
+        source_records=src, destination_records=dst, supported_types=SUPPORTED
+    )
+    assert diff.to_delete == []
+
+
+def test_diff_never_deletes_soa_records_at_destination() -> None:
+    src = [_a("@", "1.2.3.4")]
+    dst = [
+        DnsRecord(type="SOA", name="@", data="ns1.combell.be. hostmaster...", ttl=3600),
+    ]
+    diff = compute_diff(
+        source_records=src, destination_records=dst, supported_types=SUPPORTED
+    )
+    assert diff.to_delete == []
+
+
+def test_diff_zone_replace_full_example() -> None:
+    """Snapshot has its own records; Combell zone has parking + defaults."""
+    src = [
+        _a("@", "1.2.3.4"),
+        DnsRecord(type="MX", name="@", data="mail.example.com", ttl=3600, priority=10),
+    ]
+    dst = [
+        # Matches source — no-op.
+        _a("@", "1.2.3.4"),
+        # Combell parking record — should be deleted.
+        DnsRecord(type="A", name="www", data="81.89.121.1", ttl=3600),
+        # Combell default MX — should be replaced by the snapshot's MX.
+        DnsRecord(type="MX", name="@", data="mailcluster.combell.be", ttl=3600, priority=10),
+        # NS records — must survive.
+        DnsRecord(type="NS", name="@", data="ns1.combell.be", ttl=3600),
+    ]
+    diff = compute_diff(
+        source_records=src, destination_records=dst, supported_types=SUPPORTED
+    )
+    assert len(diff.to_update) == 1 and diff.to_update[0].type == "MX"
+    assert len(diff.to_delete) == 1 and diff.to_delete[0].name == "www"
+    assert diff.to_create == []
+    # NS not touched.
+    assert all(r.type != "NS" for r in diff.to_delete)

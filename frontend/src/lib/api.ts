@@ -300,6 +300,13 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ reason: reason ?? null }),
       }),
+    recover: (id: number, typedDomain: string, opts: { mock?: boolean } = {}) => {
+      const qs = opts.mock ? "?mock=true" : ""
+      return request<MigrationPlan>(`/migrations/${id}/recover${qs}`, {
+        method: "POST",
+        body: JSON.stringify({ typed_domain: typedDomain }),
+      })
+    },
     snapshot: (id: number) =>
       request<{
         id: number

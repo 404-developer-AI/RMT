@@ -32,6 +32,7 @@ from app.migrations.diff import ZoneDiff, compute_diff, serialize_diff
 from app.migrations.preflight import run_preflight, serialize_report
 from app.migrations.registry import get_migration_type
 from app.migrations.snapshot import build_snapshot_payload, capture_snapshot
+from app.migrations.translators import translate_registrant
 from app.models import DomainSnapshot, MigrationPlan, MigrationState
 from app.registrars.base import DnsRecord, RegistrarAdapter
 
@@ -210,7 +211,12 @@ async def confirm_and_submit(
     snapshot = await _load_latest_snapshot(session, plan)
     if snapshot is None:
         raise MigrationEngineError("No snapshot exists for this plan — preview it first.")
-    registrant = _registrant_from_snapshot(snapshot.snapshot)
+    raw_registrant = _registrant_from_snapshot(snapshot.snapshot)
+    # Translate between registrar shapes (GoDaddy nameFirst / addressMailing.*
+    # vs Combell first_name / postal_code / country_code). The dispatcher
+    # returns the raw dict unchanged when no translator is registered for
+    # this migration type, so future pairs can opt in without engine edits.
+    registrant = translate_registrant(plan.migration_type, raw_registrant)
 
     started = time.perf_counter()
     _ = source  # not used during confirm, but kept in the signature for symmetry
@@ -340,6 +346,11 @@ async def populate_and_verify(
     )
 
     started = time.perf_counter()
+    # Delete first so a to_update that coincides with a to_delete on the
+    # same (type, name) cannot collide. NS / SOA are already filtered out
+    # of diff.to_delete by compute_diff, so Combell's nameservers stay put.
+    for record in diff.to_delete:
+        await destination.delete_dns_record(plan.domain, record)
     for record in diff.to_create:
         await destination.create_dns_record(plan.domain, record)
     for record in diff.to_update:
@@ -353,7 +364,9 @@ async def populate_and_verify(
         destination_records=destination_records_after,
         supported_types=destination.capabilities.supported_record_types,
     )
-    verify_ok = not (verify_diff.to_create or verify_diff.to_update)
+    verify_ok = not (
+        verify_diff.to_create or verify_diff.to_update or verify_diff.to_delete
+    )
 
     if verify_ok:
         plan.state = MigrationState.COMPLETED
@@ -362,8 +375,9 @@ async def populate_and_verify(
     else:
         plan.state = MigrationState.FAILED
         plan.error_message = (
-            f"Verification failed — {len(verify_diff.to_create)} create and "
-            f"{len(verify_diff.to_update)} update operations still outstanding."
+            f"Verification failed — {len(verify_diff.to_create)} create, "
+            f"{len(verify_diff.to_update)} update, "
+            f"{len(verify_diff.to_delete)} delete operations still outstanding."
         )
 
     existing_diff = plan.diff or {}
@@ -391,6 +405,115 @@ async def populate_and_verify(
         registrar=destination.provider,
     )
     return plan
+
+
+async def recover_from_destination(
+    session: AsyncSession,
+    plan: MigrationPlan,
+    *,
+    destination: RegistrarAdapter,
+    actor: str = "operator",
+) -> MigrationPlan:
+    """Re-sync a plan's zone from the snapshot using the current Combell state.
+
+    Purpose: rescue a migration that hit a client-side failure *after* the
+    server-side transfer already succeeded (the ``steaan.be`` failure
+    mode), and to offer a "replay from snapshot" action for plans that
+    already look ``COMPLETED`` but whose zone has drifted.
+
+    Steps:
+
+    1. Verify Combell actually owns the domain — otherwise there is
+       nothing to re-sync and an error message guides the operator back
+       to the confirm step.
+    2. Force the plan into ``POPULATING_DNS`` and commit so the audit log
+       records the state transition.
+    3. Run :func:`populate_and_verify`, which now performs a zone-replace
+       (deletes destination records not in the snapshot, except NS/SOA).
+
+    Refuses on ``DRAFT`` (no snapshot yet) and ``CANCELLED`` (operator
+    explicitly gave up). Works on every other state including ``COMPLETED``
+    as a safety re-sync, per the agreed design.
+    """
+    if plan.state in (MigrationState.DRAFT, MigrationState.CANCELLED):
+        raise IllegalTransitionError(
+            f"Cannot recover a plan in state {plan.state.value}. "
+            "DRAFT has no snapshot yet; CANCELLED was explicitly abandoned."
+        )
+    snapshot = await _load_latest_snapshot(session, plan)
+    if snapshot is None:
+        raise MigrationEngineError(
+            "No snapshot exists for this plan — run the preview step first."
+        )
+
+    # Does the destination really own the domain now? If not, the
+    # populate step would drop records into a zone that is not ours.
+    started = time.perf_counter()
+    owned = await _destination_owns_domain(destination, plan.domain)
+    ownership_ms = int((time.perf_counter() - started) * 1000)
+
+    await audit.record(
+        session,
+        correlation_id=plan.correlation_id,
+        actor=actor,
+        action="migration.recover.ownership_check",
+        target={"domain": plan.domain},
+        after={"owned": owned},
+        result="success" if owned else "failure",
+        duration_ms=ownership_ms,
+        registrar=destination.provider,
+    )
+
+    if not owned:
+        raise MigrationEngineError(
+            f"{destination.provider} does not list {plan.domain!r} as owned. "
+            "Wait for the transfer to finish before attempting recovery."
+        )
+
+    previous_state = plan.state.value
+    plan.state = MigrationState.POPULATING_DNS
+    plan.error_message = None
+    # If we landed here from PREVIEWED (the steaan.be case), confirmed_at
+    # was never set — mark it now so the audit log has a coherent timeline.
+    if plan.confirmed_at is None:
+        plan.confirmed_at = datetime.now(tz=UTC)
+    if not plan.provisioning_job_id:
+        plan.provisioning_job_id = "recovered-from-destination"
+    await session.commit()
+    await session.refresh(plan)
+
+    await audit.record(
+        session,
+        correlation_id=plan.correlation_id,
+        actor=actor,
+        action="migration.recover.started",
+        target={"domain": plan.domain},
+        before={"state": previous_state},
+        after={"state": plan.state.value},
+        result="success",
+        registrar=destination.provider,
+    )
+
+    return await populate_and_verify(
+        session, plan, destination=destination, actor=actor
+    )
+
+
+async def _destination_owns_domain(
+    destination: RegistrarAdapter, domain: str
+) -> bool:
+    """Best-effort check: does the destination list ``domain`` in its inventory?
+
+    Uses :meth:`list_domains` because Combell returns 404 (not a caught
+    subclass) on ``list_dns_records`` for unowned domains, which is a
+    heavier failure mode than we need for a yes/no question.
+    """
+    try:
+        rows = list(await destination.list_domains())
+    except Exception:
+        return False
+    needle = domain.lower()
+    return any(row.name.lower() == needle for row in rows)
 
 
 async def cancel_plan(
@@ -535,6 +658,7 @@ __all__ = [
     "poll_until_settled",
     "populate_and_verify",
     "preview_plan",
+    "recover_from_destination",
     "serialize_plan",
     "serialize_snapshot",
 ]

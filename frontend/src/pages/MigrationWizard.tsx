@@ -7,6 +7,7 @@ import {
   Download,
   Info,
   Loader2,
+  LifeBuoy,
   Play,
   RefreshCw,
   ShieldCheck,
@@ -424,7 +425,122 @@ export default function MigrationWizard() {
           </CardContent>
         </Card>
       )}
+
+      {plan.state !== "DRAFT" && plan.state !== "CANCELLED" && (
+        <ResumeCard
+          plan={plan}
+          useMock={useMock}
+          onRecovered={() => {
+            void qc.invalidateQueries({ queryKey: ["migration", planId] })
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+function ResumeCard({
+  plan,
+  useMock,
+  onRecovered,
+}: {
+  plan: MigrationPlan
+  useMock: boolean
+  onRecovered: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [typedDomain, setTypedDomain] = useState("")
+  const [error, setError] = useState<string | null>(null)
+
+  const recoverMutation = useMutation({
+    mutationFn: () =>
+      api.migrations.recover(plan.id, typedDomain.trim(), { mock: useMock }),
+    onSuccess: () => {
+      setError(null)
+      setTypedDomain("")
+      setExpanded(false)
+      onRecovered()
+    },
+    onError: (err) => setError(formatError(err)),
+  })
+
+  const canSubmit = typedDomain.trim().toLowerCase() === plan.domain.toLowerCase()
+
+  return (
+    <Card className="border-amber-500/40 bg-amber-500/5">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <LifeBuoy className="size-5 text-amber-600 dark:text-amber-400" />
+          Resume from Combell
+        </CardTitle>
+        <CardDescription>
+          Replays the snapshot against the current Combell zone. Deletes
+          any records at Combell that are not in the snapshot (except NS
+          and SOA), then creates or updates the rest. Safe to re-run.
+          Use this when a migration stalled part-way, or to re-sync a
+          drifted zone.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!expanded ? (
+          <Button
+            variant="outline"
+            onClick={() => {
+              setExpanded(true)
+              setError(null)
+            }}
+          >
+            <LifeBuoy />
+            Resume migration…
+          </Button>
+        ) : (
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="recover-typed">
+                Type the domain to confirm (<code>{plan.domain}</code>)
+              </Label>
+              <Input
+                id="recover-typed"
+                value={typedDomain}
+                onChange={(e) => setTypedDomain(e.target.value)}
+                placeholder={plan.domain}
+                autoComplete="off"
+              />
+            </div>
+            {error && (
+              <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => recoverMutation.mutate()}
+                disabled={!canSubmit || recoverMutation.isPending}
+              >
+                {recoverMutation.isPending ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <LifeBuoy />
+                )}
+                Resume now
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setExpanded(false)
+                  setTypedDomain("")
+                  setError(null)
+                }}
+                disabled={recoverMutation.isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

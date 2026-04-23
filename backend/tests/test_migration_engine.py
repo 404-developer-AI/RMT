@@ -15,17 +15,21 @@ from sqlalchemy import delete
 
 from app.db import AsyncSessionLocal
 from app.migrations.engine import (
+    IllegalTransitionError,
+    MigrationEngineError,
     confirm_and_submit,
     create_plan,
     poll_transfer,
     populate_and_verify,
     preview_plan,
+    recover_from_destination,
 )
 from app.models import AuditEvent, DomainSnapshot, MigrationPlan, MigrationState
 from app.registrars.base import (
     Contacts,
     DnsRecord,
     DomainDetail,
+    DomainSummary,
     JobStatus,
     ProvisioningJobRef,
     RegistrarAdapter,
@@ -66,7 +70,8 @@ class StubDestination(RegistrarAdapter):
 
     def __init__(self) -> None:
         super().__init__(api_key="", api_base="", mock=True)
-        self.created: list[DnsRecord] = []
+        self.zone: list[DnsRecord] = []
+        self.owned: set[str] = set()
         self._job_status = "ongoing"
 
     @property  # type: ignore[override]
@@ -80,12 +85,16 @@ class StubDestination(RegistrarAdapter):
     async def test_connection(self) -> bool:
         return True
 
+    async def list_domains(self):
+        return [DomainSummary(name=d, status="ACTIVE") for d in sorted(self.owned)]
+
     async def list_dns_records(self, name: str):
-        return list(self.created)
+        return list(self.zone)
 
     async def request_transfer_in(
         self, *, name, auth_code, registrant, name_servers=None
     ) -> ProvisioningJobRef:
+        self.owned.add(name)
         return ProvisioningJobRef(job_id="stub-job-1", submitted_at=datetime.now(tz=UTC))
 
     async def get_provisioning_job(self, job_id: str) -> JobStatus:
@@ -96,7 +105,19 @@ class StubDestination(RegistrarAdapter):
         )
 
     async def create_dns_record(self, name, record) -> None:
-        self.created.append(record)
+        self.zone.append(record)
+
+    async def update_dns_record(self, name, record) -> None:
+        # Simple replace on (type, name) identity.
+        self.zone = [
+            r for r in self.zone if (r.type, r.name) != (record.type, record.name)
+        ]
+        self.zone.append(record)
+
+    async def delete_dns_record(self, name, record) -> None:
+        self.zone = [
+            r for r in self.zone if (r.type, r.name) != (record.type, record.name)
+        ]
 
 
 @pytest.fixture
@@ -154,7 +175,7 @@ async def test_full_lifecycle_happy_path(clean_migration_state: None) -> None:
 
         plan = await populate_and_verify(session, plan, destination=destination)
         assert plan.state == MigrationState.COMPLETED
-        assert destination.created, "populate step should have created the A record"
+        assert destination.zone, "populate step should have created the A record"
 
 
 async def test_confirm_rejects_wrong_typed_domain(clean_migration_state: None) -> None:
@@ -177,3 +198,116 @@ async def test_confirm_rejects_wrong_typed_domain(clean_migration_state: None) -
                 typed_domain="other.com",
             )
         assert "Typed domain does not match" in str(excinfo.value)
+
+
+# --- recover_from_destination ---------------------------------------------
+
+
+async def test_recover_from_previewed_wipes_defaults_and_populates(
+    clean_migration_state: None,
+) -> None:
+    """Reproduces the steaan.be scenario.
+
+    Transfer succeeded on Combell's side but the engine never advanced
+    past PREVIEWED. Clicking Resume should:
+      * verify Combell now owns the domain,
+      * delete the default Combell records not in the snapshot,
+      * create the snapshot's records,
+      * move the plan to COMPLETED with confirmed_at populated.
+    """
+    source = StubSource()
+    destination = StubDestination()
+    # Simulate post-transfer state: Combell owns the domain, its zone has
+    # only a default parking record.
+    destination.owned.add("example.com")
+    destination.zone = [
+        DnsRecord(type="A", name="parking", data="81.89.121.1", ttl=3600),
+    ]
+
+    async with AsyncSessionLocal() as session:
+        plan = await create_plan(
+            session, domain="example.com", migration_type="godaddy_to_combell"
+        )
+        plan, *_ = await preview_plan(
+            session, plan, source=source, destination=destination
+        )
+        assert plan.state == MigrationState.PREVIEWED
+        assert plan.confirmed_at is None
+
+        plan = await recover_from_destination(
+            session, plan, destination=destination
+        )
+
+    assert plan.state == MigrationState.COMPLETED
+    assert plan.confirmed_at is not None
+    # Parking record is gone, snapshot's A record is in place.
+    types_names = {(r.type, r.name) for r in destination.zone}
+    assert ("A", "@") in types_names
+    assert ("A", "parking") not in types_names
+
+
+async def test_recover_refuses_when_destination_does_not_own_domain(
+    clean_migration_state: None,
+) -> None:
+    source = StubSource()
+    destination = StubDestination()  # destination.owned stays empty
+
+    async with AsyncSessionLocal() as session:
+        plan = await create_plan(
+            session, domain="example.com", migration_type="godaddy_to_combell"
+        )
+        plan, *_ = await preview_plan(
+            session, plan, source=source, destination=destination
+        )
+        with pytest.raises(MigrationEngineError, match="does not list"):
+            await recover_from_destination(
+                session, plan, destination=destination
+            )
+
+
+async def test_recover_refused_on_draft_state(
+    clean_migration_state: None,
+) -> None:
+    destination = StubDestination()
+    destination.owned.add("example.com")
+    async with AsyncSessionLocal() as session:
+        plan = await create_plan(
+            session, domain="example.com", migration_type="godaddy_to_combell"
+        )
+        # DRAFT has no snapshot yet — recovery is meaningless.
+        with pytest.raises(IllegalTransitionError):
+            await recover_from_destination(
+                session, plan, destination=destination
+            )
+
+
+async def test_recover_is_safe_to_run_on_already_completed_plan(
+    clean_migration_state: None,
+) -> None:
+    """Replay on a COMPLETED plan should converge the zone and stay COMPLETED."""
+    source = StubSource()
+    destination = StubDestination()
+    destination.owned.add("example.com")
+
+    async with AsyncSessionLocal() as session:
+        plan = await create_plan(
+            session, domain="example.com", migration_type="godaddy_to_combell"
+        )
+        plan, *_ = await preview_plan(
+            session, plan, source=source, destination=destination
+        )
+        plan = await recover_from_destination(
+            session, plan, destination=destination
+        )
+        assert plan.state == MigrationState.COMPLETED
+
+        # Someone adds a stray record at Combell; another Resume click
+        # should clean it up without fussing about the plan's state.
+        destination.zone.append(
+            DnsRecord(type="A", name="stray", data="2.2.2.2", ttl=3600)
+        )
+        plan = await recover_from_destination(
+            session, plan, destination=destination
+        )
+        assert plan.state == MigrationState.COMPLETED
+        assert all(r.name != "stray" for r in destination.zone)

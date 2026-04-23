@@ -1,14 +1,20 @@
 """Record-set diff engine + TTL clamping for the GoDaddy → Combell populate step.
 
-V1 is a one-shot populate of an empty Combell zone immediately after the
-transfer completes, so the diff is almost always "create every record from
-the snapshot". We still compute a full three-way diff (create / update /
-delete) because:
+Populate performs a **zone replace**: the snapshot is treated as the
+authoritative zone content, and anything at the destination that does not
+match is reconciled. Concretely:
 
-1. Re-running a partially-applied migration must skip records that already
-   match at the destination — that is the "idempotent re-run" promise.
-2. The UI shows the diff in the preview screen so the operator can eyeball
-   the record count before confirming.
+* Records in the source but missing (or stale) at the destination are
+  created / updated.
+* Records at the destination that are not in the source are deleted — so
+  Combell's default parking / mail-placeholder records disappear on
+  populate and the zone ends up matching the snapshot exactly.
+
+NS and SOA records are always excluded from both sides of the diff:
+Combell manages nameservers via a separate domain-level endpoint
+(``PUT /v2/domains/{name}/nameservers``) and SOA records are registrar-
+owned. Leaving them in the diff would delete Combell's own nameservers,
+which is the opposite of what operators want.
 
 TTL clamping is applied on the *outgoing* records: Combell rejects TTLs
 outside 60–86400 s with a 400. We clamp rather than error so a zone with a
@@ -90,7 +96,14 @@ def compute_diff(
     skipped = [r for r in source_clamped if r.type not in supported]
     source_relevant = [r for r in source_clamped if r.type in supported]
 
-    destination_map = {_record_key(r): r for r in destination_records}
+    # Destination records get filtered the same way: NS / SOA stay on the
+    # destination untouched because they represent the registrar's own
+    # management of the zone, not user-authored content.
+    destination_relevant = [
+        r for r in destination_records if r.type in supported
+    ]
+
+    destination_map = {_record_key(r): r for r in destination_relevant}
     source_map: dict[tuple[str, str], DnsRecord] = {}
     for r in source_relevant:
         # Multiple records can share a (type, name) — notably TXT and MX.
@@ -108,9 +121,16 @@ def compute_diff(
         elif _value_tuple(existing) != _value_tuple(rec):
             to_update.append(rec)
 
-    # V1 never deletes records the destination added on its own — the
-    # populate step targets an empty zone. Keep the slot open for V2.
-    to_delete: list[DnsRecord] = []
+    # Zone-replace: every destination record that has no counterpart in
+    # the source snapshot is scheduled for deletion. This is what wipes
+    # Combell's default parking / mail-placeholder records after a
+    # transfer — without this step, the populate would silently leave
+    # stale records alongside the migrated ones.
+    to_delete = [
+        existing
+        for key, existing in destination_map.items()
+        if key not in source_map
+    ]
 
     return ZoneDiff(
         to_create=to_create,

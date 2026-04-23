@@ -9,6 +9,7 @@ Shape exposed to the UI:
 * ``POST   /api/migrations/{id}/confirm``   — submit the transfer
 * ``POST   /api/migrations/{id}/poll``      — manual poll tick
 * ``POST   /api/migrations/{id}/cancel``    — cancel a pre-confirm plan
+* ``POST   /api/migrations/{id}/recover``   — resume from destination (zone replay)
 * ``GET    /api/migrations/{id}/snapshot``  — download the latest snapshot JSON
 
 Every route delegates to :mod:`app.migrations.engine` for business logic —
@@ -36,6 +37,7 @@ from app.migrations.engine import (
     poll_transfer,
     populate_and_verify,
     preview_plan,
+    recover_from_destination,
     serialize_plan,
     serialize_snapshot,
 )
@@ -60,6 +62,12 @@ class ConfirmBody(BaseModel):
 
 class CancelBody(BaseModel):
     reason: str | None = None
+
+
+class RecoverBody(BaseModel):
+    """Destructive zone-replay action — always typed-domain gated."""
+
+    typed_domain: str = Field(min_length=1)
 
 
 class PlanOut(BaseModel):
@@ -263,6 +271,42 @@ async def cancel(
         plan = await cancel_plan(session, plan, reason=body.reason)
     except (IllegalTransitionError, MigrationEngineError) as exc:
         raise _wrap_engine(exc) from exc
+    return serialize_plan(plan)
+
+
+@router.post(
+    "/{plan_id}/recover",
+    response_model=dict[str, Any],
+    summary="Resume a migration from Combell's current zone state",
+)
+async def recover(
+    plan_id: Annotated[int, Path(ge=1)],
+    body: RecoverBody,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    mock: Annotated[bool, Query()] = False,
+) -> dict[str, Any]:
+    """Re-run populate against the current destination zone.
+
+    This replays the snapshot verbatim: deletes every non-snapshot record
+    at the destination (except NS / SOA), then creates / updates whatever
+    is missing. A ``typed_domain`` gate matches the one on the confirm
+    step — it is the operator's explicit OK for a destructive action.
+    """
+    plan = await _load_plan(session, plan_id)
+    if body.typed_domain.strip().lower() != plan.domain.lower():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Typed domain does not match the plan's domain.",
+        )
+    pair = await _load_pair(session, plan, mock=mock)
+    try:
+        plan = await recover_from_destination(
+            session, plan, destination=pair.destination
+        )
+    except (IllegalTransitionError, MigrationEngineError, RegistrarHTTPError) as exc:
+        raise _wrap_engine(exc) from exc
+    finally:
+        await _close_pair(pair)
     return serialize_plan(plan)
 
 
