@@ -21,8 +21,15 @@ RUN apk add --no-cache gettext wget \
 
 # Config templates — one for HTTP-only, one for HTTPS. The entrypoint
 # script picks the right one at runtime based on SSL_ENABLED.
-COPY docker/web/nginx/http.conf.template  /etc/nginx/templates/http.conf.template
-COPY docker/web/nginx/https.conf.template /etc/nginx/templates/https.conf.template
+#
+# NOTE: these live under /etc/rmt/templates, NOT /etc/nginx/templates.
+# The upstream nginx:alpine image ships an entrypoint hook
+# (20-envsubst-on-templates.sh) that renders EVERY file in
+# /etc/nginx/templates into /etc/nginx/conf.d — which would load both
+# the HTTP and HTTPS server blocks at once, crashing nginx when the
+# Let's Encrypt cert is absent.
+COPY docker/web/nginx/http.conf.template  /etc/rmt/templates/http.conf.template
+COPY docker/web/nginx/https.conf.template /etc/rmt/templates/https.conf.template
 
 # Nginx's official image auto-runs every executable in /docker-entrypoint.d/
 # before starting nginx. Number prefix controls order.

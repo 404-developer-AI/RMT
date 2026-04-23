@@ -1,7 +1,10 @@
 #!/bin/sh
-# Renders the right nginx config from /etc/nginx/templates based on
+# Renders the right nginx config from /etc/rmt/templates based on
 # SSL_ENABLED. Runs as part of the nginx:alpine entrypoint chain before
 # nginx itself starts.
+#
+# Templates live under /etc/rmt/templates (NOT /etc/nginx/templates) so
+# the upstream envsubst hook does not render the unused template too.
 
 set -eu
 
@@ -10,11 +13,11 @@ FQDN="${FQDN:-localhost}"
 
 case "$SSL_ENABLED" in
     true|1|yes|on)
-        TEMPLATE=/etc/nginx/templates/https.conf.template
+        TEMPLATE=/etc/rmt/templates/https.conf.template
         mode="HTTPS"
         ;;
     *)
-        TEMPLATE=/etc/nginx/templates/http.conf.template
+        TEMPLATE=/etc/rmt/templates/http.conf.template
         mode="HTTP-only"
         ;;
 esac
