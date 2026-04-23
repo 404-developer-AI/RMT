@@ -20,6 +20,9 @@ CHANGELOG-ARCHIVE.md
 ARCHITECTURE.md
 NOTFORCLAUD.MD
 
+# Local debug artefacts (OpenAPI dumps pulled for ad-hoc inspection, etc.)
+.combell-*.json
+
 # ---------------------------------------------------------------------------
 # Python (backend)
 # ---------------------------------------------------------------------------
