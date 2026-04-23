@@ -29,6 +29,7 @@ from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlencode
 
 from app.logging import get_logger
 from app.registrars.base import (
@@ -108,13 +109,14 @@ class CombellAdapter(RegistrarAdapter):
         if self.mock:
             return True
         client = self._get_client()
-        headers = self._sign("GET", "/v2/domains")
-        response = await client.request(
-            "GET",
-            "/v2/domains",
-            headers=headers,
-            params={"take": 1},
-        )
+        # Combell signs the path INCLUDING the query string. We therefore
+        # compose the full "/v2/domains?take=1" once and use that verbatim
+        # for both the signature and the outgoing request — passing params=
+        # separately to httpx would re-append a query string that the
+        # signature did not cover.
+        path_with_query = _compose_path("/v2/domains", {"take": 1})
+        headers = self._sign("GET", path_with_query)
+        response = await client.request("GET", path_with_query, headers=headers)
         if response.status_code == 200:
             return True
         if response.status_code in (401, 403):
@@ -164,12 +166,15 @@ class CombellAdapter(RegistrarAdapter):
             if body is not None
             else None
         )
-        headers = self._sign(method, path, body_bytes)
+        # Combell signs path + query string together. Compose the full path
+        # here and pass it as a single string to both the signer and httpx
+        # so the two can never drift apart.
+        full_path = _compose_path(path, params)
+        headers = self._sign(method, full_path, body_bytes)
         return await client.request_json(
             method,
-            path,
+            full_path,
             headers=headers,
-            params=params,
             content=body_bytes,
             expected_status=expected_status,
         )
@@ -340,6 +345,30 @@ class CombellAdapter(RegistrarAdapter):
 
 
 # --- helpers ---------------------------------------------------------------
+
+
+def _compose_path(path: str, params: dict[str, Any] | None) -> str:
+    """Assemble ``path?query`` once, with a deterministic byte sequence.
+
+    Combell's signature covers the full request line after the host, so
+    the string we sign MUST equal what we send. We build the query here
+    with :func:`urllib.parse.urlencode` and then hand the composed path
+    to httpx as-is (no separate ``params=`` argument) — that guarantees
+    the bytes in the signed string and on the wire are identical.
+
+    Key order is preserved (``params`` is expected to be a dict, which is
+    insertion-ordered in Python 3.7+). Callers that care about a stable
+    canonical ordering pass an already-ordered dict.
+    """
+    if not params:
+        return path
+    encoded = urlencode(
+        [(k, v) for k, v in params.items() if v is not None],
+        doseq=True,
+    )
+    if not encoded:
+        return path
+    return f"{path}?{encoded}"
 
 
 def _record_to_combell_body(record: DnsRecord) -> dict[str, Any]:

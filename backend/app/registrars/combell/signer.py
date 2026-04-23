@@ -11,9 +11,19 @@ that gets signed is the concatenation of:
 
 where ``content`` is ``base64(MD5(body))`` for requests that carry a body
 and the empty string otherwise. The signature is the base64-encoded
-HMAC-SHA256 of that concatenation, keyed with the *base64-decoded* api
-secret (Combell's control panel exposes the secret already base64-encoded;
-we decode once at construction). The resulting Authorization header is:
+HMAC-SHA256 of that concatenation, keyed with the **raw UTF-8 bytes** of
+the api_secret string that Combell's control panel displays. That matches
+Combell's own PHP reference implementation
+(`combell/combell-api`, ``HmacHandler.php``), which passes
+``$this->apiSecret`` straight into ``hash_hmac`` without any decoding.
+
+Earlier revisions of this signer base64-decoded the secret first; every
+request it produced was rejected by Combell with
+``authorization_hmac_invalid`` — an easy mistake to make because the
+secret Combell hands you happens to look like base64 and clearly has 256
+bits of entropy once decoded. Treat it as opaque text.
+
+The resulting Authorization header is:
 
     Authorization: hmac {apikey}:{signature}:{nonce}:{timestamp}
 
@@ -39,7 +49,6 @@ operational concern outside this module (see ARCHITECTURE.md §4).
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import hmac
 import re
@@ -100,13 +109,13 @@ class CombellSigner:
         if not api_secret:
             raise ValueError("api_secret is required")
         self._api_key = api_key
-        # Combell distributes the secret as base64; the HMAC key is its
-        # decoded byte string. Validate strictly so a paste error fails
-        # loudly at construction instead of producing silent bad signatures.
-        try:
-            self._secret_bytes = base64.b64decode(api_secret, validate=True)
-        except binascii.Error as exc:
-            raise ValueError("api_secret is not valid base64") from exc
+        # Match Combell's PHP reference: pass the secret string straight
+        # into the HMAC as its UTF-8 byte encoding. Do NOT base64-decode —
+        # Combell's control panel displays the secret as an opaque text
+        # token, and even though that token looks like base64, decoding it
+        # produces a different HMAC key and every request fails with
+        # "authorization_hmac_invalid".
+        self._secret_bytes = api_secret.encode("utf-8")
 
     def sign(
         self,

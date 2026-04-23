@@ -66,7 +66,6 @@ class StubDestination(RegistrarAdapter):
 
     def __init__(self) -> None:
         super().__init__(api_key="", api_base="", mock=True)
-        self.capabilities.supported_record_types  # type: ignore[attr-defined]
         self.created: list[DnsRecord] = []
         self._job_status = "ongoing"
 

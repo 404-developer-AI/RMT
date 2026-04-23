@@ -25,15 +25,18 @@ from app.registrars.combell.signer import (
     _percent_encode_uppercase,
 )
 
-# Deterministic 16-byte secret → base64 form is what an operator would paste.
-SECRET_BYTES = bytes(range(16))
+# What an operator pastes is the opaque secret string Combell's control
+# panel displays. We intentionally do NOT base64-decode it before keying
+# the HMAC — matching Combell's own PHP reference. The secret below is
+# shaped like the real thing (base64-looking) but is used as UTF-8 bytes.
 API_KEY = "fixture-apikey"
-API_SECRET = base64.b64encode(SECRET_BYTES).decode("ascii")
+API_SECRET = "AAECAwQFBgcICQoLDA0ODw=="
+SECRET_KEY_BYTES = API_SECRET.encode("utf-8")
 
 
 def _expected_signature(string_to_sign: str) -> str:
     digest = hmac.new(
-        SECRET_BYTES, string_to_sign.encode("utf-8"), hashlib.sha256
+        SECRET_KEY_BYTES, string_to_sign.encode("utf-8"), hashlib.sha256
     ).digest()
     return base64.b64encode(digest).decode("ascii")
 
@@ -92,9 +95,11 @@ def test_empty_api_secret_rejected() -> None:
         CombellSigner(api_key=API_KEY, api_secret="")
 
 
-def test_invalid_base64_secret_rejected() -> None:
-    with pytest.raises(ValueError, match="not valid base64"):
-        CombellSigner(api_key=API_KEY, api_secret="not!valid!base64!@#")
+def test_non_base64_secret_is_accepted() -> None:
+    """Combell treats the secret as opaque text — no base64 shape required."""
+    signer = CombellSigner(api_key=API_KEY, api_secret="not-base64-but-still-valid!")
+    result = signer.sign("GET", "/v2/x", timestamp="1", nonce="n")
+    assert result.authorization.startswith(f"hmac {API_KEY}:")
 
 
 # --- Sign() core behaviour ------------------------------------------------
