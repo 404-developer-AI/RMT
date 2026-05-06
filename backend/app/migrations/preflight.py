@@ -192,6 +192,32 @@ def _run_common(
         )
     )
 
+    # Combell's POST /v2/dns/{domain}/records rejects any record_name
+    # containing ``*`` with ``dns_invalid_record_name`` — even though the
+    # GET endpoint serialises wildcards as ``"*"`` and the panel can
+    # create them. The translator skips these so populate doesn't break;
+    # the operator must recreate them in the Combell panel.
+    wildcard_records = [r for r in records if "*" in (r.name or "")]
+    if wildcard_records:
+        listing = ", ".join(
+            sorted({f"{r.type} {r.name}" for r in wildcard_records})
+        )
+        wildcard_msg = (
+            f"Wildcard record(s) detected ({listing}). Combell's API rejects "
+            f"wildcard creation — they will be skipped during populate. "
+            f"Recreate them in the Combell panel after the transfer."
+        )
+    else:
+        wildcard_msg = "No wildcard records detected."
+    results.append(
+        CheckResult(
+            key="dns.wildcard_records",
+            severity="warning",
+            ok=not wildcard_records,
+            message=wildcard_msg,
+        )
+    )
+
     _ = now  # reserved for future time-based common checks
     return results
 

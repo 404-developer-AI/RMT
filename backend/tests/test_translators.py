@@ -247,3 +247,36 @@ def test_parked_filter_does_not_touch_non_a_records() -> None:
     src = [DnsRecord(type="TXT", name="@", data="Parked", ttl=3600)]
     out = translate_records("godaddy_to_combell", src, domain="example.com")
     assert len(out) == 1
+
+
+# --- Combell POST API limitations ----------------------------------------
+
+
+def test_apex_wildcard_record_is_filtered_out() -> None:
+    """Combell's POST endpoint rejects ``record_name='*'``; skip it."""
+    src = [
+        DnsRecord(type="A", name="*", data="216.239.32.21", ttl=3600),
+        DnsRecord(type="A", name="@", data="1.2.3.4", ttl=3600),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert [r.name for r in out] == ["@"]
+
+
+def test_subdomain_wildcard_record_is_filtered_out() -> None:
+    """``*.foo`` (sub-zone wildcard) is also rejected by Combell's POST."""
+    src = [
+        DnsRecord(type="A", name="*.foo", data="1.2.3.4", ttl=3600),
+        DnsRecord(type="A", name="bar", data="5.6.7.8", ttl=3600),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert [r.name for r in out] == ["bar"]
+
+
+def test_wildcard_filter_applies_across_record_types() -> None:
+    """Combell rejects ``*`` for any type; not just A records."""
+    src = [
+        DnsRecord(type="CNAME", name="*", data="hosting.example.net", ttl=3600),
+        DnsRecord(type="TXT", name="*", data="v=spf1 -all", ttl=3600),
+    ]
+    out = translate_records("godaddy_to_combell", src, domain="example.com")
+    assert out == []

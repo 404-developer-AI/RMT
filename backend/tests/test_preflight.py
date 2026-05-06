@@ -108,6 +108,41 @@ def test_godaddy_parking_check_is_case_insensitive() -> None:
     assert not check.ok
 
 
+def test_wildcard_record_raises_warning_only() -> None:
+    """Wildcards are skipped during populate — operator gets a warning."""
+    records = [
+        DnsRecord(type="A", name="*", data="216.239.32.21", ttl=3600),
+        DnsRecord(type="A", name="*", data="216.239.34.21", ttl=3600),
+    ]
+    report = run_preflight(_detail("example.com"), records, now=NOW)
+    assert report.passed
+    warning = next(r for r in report.results if r.key == "dns.wildcard_records")
+    assert warning.severity == "warning"
+    assert not warning.ok
+    assert "A *" in warning.message
+    assert "Combell panel" in warning.message
+
+
+def test_wildcard_check_passes_when_absent() -> None:
+    records = [DnsRecord(type="A", name="@", data="1.2.3.4", ttl=3600)]
+    report = run_preflight(_detail("example.com"), records, now=NOW)
+    check = next(r for r in report.results if r.key == "dns.wildcard_records")
+    assert check.ok
+
+
+def test_wildcard_check_lists_each_unique_pair_once() -> None:
+    """Multiple A wildcards collapse to one ``A *`` listing entry."""
+    records = [
+        DnsRecord(type="A", name="*", data="1.2.3.4", ttl=3600),
+        DnsRecord(type="A", name="*", data="5.6.7.8", ttl=3600),
+        DnsRecord(type="CNAME", name="*.foo", data="x.example.net", ttl=3600),
+    ]
+    report = run_preflight(_detail("example.com"), records, now=NOW)
+    check = next(r for r in report.results if r.key == "dns.wildcard_records")
+    assert check.message.count("A *") == 1
+    assert "CNAME *.foo" in check.message
+
+
 def test_be_ruleset_treats_privacy_as_warning_only() -> None:
     report = run_preflight(
         _detail("fixture.be", privacy=True, transfer_away_eligible_at=None),

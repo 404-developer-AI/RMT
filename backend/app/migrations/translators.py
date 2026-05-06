@@ -138,6 +138,21 @@ def _is_godaddy_internal_record(record: DnsRecord) -> bool:
     return record.type == "A" and data == _GODADDY_PARKED_SENTINEL
 
 
+def _is_combell_unsupported_record(record: DnsRecord) -> bool:
+    """Return True for records Combell's POST endpoint refuses to create.
+
+    Wildcard records (``record_name`` containing ``*``) are the known case:
+    Combell's GET endpoint happily returns ``record_name: "*"`` and the
+    panel can create them, but ``POST /v2/dns/{domain}/records`` rejects
+    any ``*`` with ``dns_invalid_record_name`` — the panel uses a
+    different internal code path. Empirically verified with
+    ``priority: 0`` set or omitted; both rejected. A preflight warning
+    surfaces the skipped wildcards so the operator recreates them in the
+    Combell panel after the transfer.
+    """
+    return "*" in (record.name or "")
+
+
 def godaddy_to_combell_record(record: DnsRecord, *, domain: str) -> DnsRecord:
     """Translate one GoDaddy-shaped DNS record into Combell's expectations.
 
@@ -167,6 +182,7 @@ def godaddy_to_combell_records(
         godaddy_to_combell_record(r, domain=domain)
         for r in records
         if not _is_godaddy_internal_record(r)
+        and not _is_combell_unsupported_record(r)
     ]
 
 
